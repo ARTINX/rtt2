@@ -1,0 +1,10 @@
+/target/
+/dist/
+/logs/
+/release/
+*.log
+*.pdb
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
