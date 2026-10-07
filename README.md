@@ -4,7 +4,7 @@ RTT2 是面向 ARTINX Kit-C 和 Kit-miao 的 Windows 桌面调试工具。它通
 
 ## 功能
 
-- 实时显示 debug_info.status（32 位二进制、十六进制、十进制）和 v2 至 v14 的数值。
+- 实时显示 debug_info.status（32 位二进制、十六进制、十进制）和 value1 至 value13 的数值。
 - 多个独立曲线窗口共用主窗口接收的数据；支持 CSV 记录、回放和单次发射记录。
 - GUI 命令 Shell 与 send CLI 发送一次性 PING/ECHO 命令，按会话和序号匹配执行回执。
 - 遥测含序号、板端时间戳和 CRC16；坏帧与丢帧分别统计。
@@ -13,9 +13,9 @@ RTT2 目前仅支持 Windows。固件在独立的 ARTINX 工程中维护；本�
 
 ## 快速开始
 
-1. 从 [v1.1.1 Release](https://mirrors.sustech.edu.cn/git/artinx_eee/artinx_core/rtt2/-/releases/v1.1.1) 下载 rtt2v1.1.1.exe，连接开发板和调试探针。
+1. 从 [v1.2.0 Release](https://mirrors.sustech.edu.cn/git/artinx_eee/artinx_core/rtt2/-/releases/v1.2.0) 下载 rtt2v1.2.0.exe，连接开发板和调试探针。
 2. 双击程序，选择芯片与**该板卡的 Keil 编译输出目录**。目录中需有包含 _SEGGER_RTT 符号的 .map 文件。
-3. 点击“启动 RTT 监控”。主窗口右侧显示状态和原始变量；点击“新建曲线窗口”，先选择变量，再创建独立曲线页面；可同时打开多个窗口。
+3. 点击“启动 RTT 监控”。主窗口右侧显示状态和原始变量；点击“新建曲线窗口”，在单列列表中选择变量，再创建独立曲线页面；可同时打开多个窗口。
 4. 根据需要开始 CSV 记录、加载 CSV 回放，或点击“记录本发”保存一次发射时的快照。
 
 | 板卡 | 芯片型号 | 工程输出目录示例 |
@@ -27,11 +27,13 @@ RTT2 目前仅支持 Windows。固件在独立的 ARTINX 工程中维护；本�
 
 ### 曲线查看
 
-- 每个窗口在创建时选择变量，图表随窗口缩放自动适配。
+- 每次新建窗口时变量均为未选中，单列显示 value1–value13，不沿用上次选择；图表随窗口缩放自动适配。
 - 默认跟随最新数据，时间跨度为 10 秒；拖动平移、Ctrl + 滚轮缩放、右键拖动框选放大后切换为“自由查看”。
 - **回到最新**：只恢复时间轴跟随，保留手动调整的时间跨度和纵轴范围。
 - **重置视图**：恢复 10 秒时间跨度并自动适配纵轴。
 - **清除曲线**：只清除当前窗口的显示历史，其他窗口和 CSV 记录不受影响。
+
+新 CSV 的变量表头为 value1–value13，按下位机字段顺序对应；旧 CSV 回放保留文件原有列名。
 
 ### 命令 Shell 与 CLI
 
@@ -40,7 +42,7 @@ GUI 右侧的命令 Shell 接受 send <cmd_id> [float 参数…]。按一次 Ent
 GUI 必须先连接开发板；CLI 通过当前 Windows 用户的本地命名管道交给 GUI，自己不会连接探针：
 
 ~~~powershell
-$exe = '.\rtt2v1.1.1.exe'
+$exe = '.\rtt2v1.2.0.exe'
 & $exe status --json
 & $exe send 0 --json
 & $exe send 1 1.0 2.0 --json
@@ -50,7 +52,7 @@ $exe = '.\rtt2v1.1.1.exe'
 
 ~~~powershell
 $project = 'C:\path\to\artinx-2026-frame\bsp\cubemx\MDK-ARM\kit-miao'
-Start-Process -FilePath '.\rtt2v1.1.1.exe' -ArgumentList @('gui', '--project', $project, '--chip', 'STM32H723VG', '--connect')
+Start-Process -FilePath '.\rtt2v1.2.0.exe' -ArgumentList @('gui', '--project', $project, '--chip', 'STM32H723VG', '--connect')
 ~~~
 
 send --json 返回执行状态、会话 ID、序号、板端时间戳、回显值和主机测得的回执延迟。退出码：0 已执行，2 被拒绝或参数无效，3 结果未知，4 GUI 本地请求队列已满，5 GUI 未运行或未连接。命令回执默认等待 2 秒；超时不自动重试，因为板端可能已经执行。当前固件保持原有 Message_Publish 接口，内部消息队列投递失败时无法立即产生 QUEUE_FULL 回执，上位机会报告“结果未知”。

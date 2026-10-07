@@ -132,7 +132,7 @@ fn run_gui(config: LaunchConfig) -> Result<i32, String> {
     };
 
     eframe::run_native(
-        "RTT2 实时监控",
+        &format!("RTT2 v{} 实时监控", env!("CARGO_PKG_VERSION")),
         options,
         Box::new(move |cc| Ok(Box::new(RttApp::new(cc, config)))),
     )

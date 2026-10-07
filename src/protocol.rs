@@ -2,7 +2,7 @@
 //!
 //! 70 bytes, little endian:
 //! `RT | version=3 | length=70 | seq:u32 | tick_ms:u32 | status:u32 |
-//! value2..value14:f32[13] | crc16_ccitt_false:u16`.
+//! value1..value13:f32[13] | crc16_ccitt_false:u16`.
 //! CRC covers bytes 0..68; the CRC field itself is excluded.
 
 pub const MAGIC: [u8; 2] = *b"RT";

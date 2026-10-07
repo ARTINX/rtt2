@@ -294,7 +294,7 @@ impl RttApp {
             live_plot_windows: Vec::new(),
             next_live_plot_window_id: 1,
             new_plot_open: false,
-            new_plot_variables: std::array::from_fn(|index| index == 0),
+            new_plot_variables: [false; VARIABLE_COUNT],
             last_board_timestamp: None,
             timestamp_epoch: 0,
             plot_origin_ms: None,
@@ -303,7 +303,7 @@ impl RttApp {
             log_thread: None,
             log_path: None,
             log_status: "未记录".to_owned(),
-            shot_variable: "v2".to_owned(),
+            shot_variable: Self::variable_name(0),
             shot_recorder: None,
             replay: None,
             replay_open: false,
@@ -315,7 +315,7 @@ impl RttApp {
     }
 
     fn variable_name(index: usize) -> String {
-        format!("v{}", index + 2)
+        format!("value{}", index + 1)
     }
 
     fn browse_project(&mut self) {
@@ -699,22 +699,19 @@ impl RttApp {
             return;
         }
         let modal = egui::Modal::new(egui::Id::new("new_live_plot")).show(ctx, |ui| {
-            ui.set_width(380.0);
+            ui.set_width(280.0);
             ui.heading("新建曲线窗口");
             ui.label("选择此窗口要显示的变量");
             ui.add_space(8.0);
-            egui::Grid::new("new_plot_variables")
-                .num_columns(4)
-                .spacing([24.0, 12.0])
+            egui::ScrollArea::vertical()
+                .id_salt("new_plot_variables")
+                .max_height(340.0)
                 .show(ui, |ui| {
                     for index in 0..VARIABLE_COUNT {
                         ui.checkbox(
                             &mut self.new_plot_variables[index],
                             RichText::new(Self::variable_name(index)).color(variable_color(index)),
                         );
-                        if index % 4 == 3 {
-                            ui.end_row();
-                        }
                     }
                 });
             ui.add_space(12.0);
@@ -1288,7 +1285,11 @@ impl RttApp {
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("原始数据 · v2–v14").strong().size(17.0));
+                ui.label(
+                    RichText::new("原始数据 · value1–value13")
+                        .strong()
+                        .size(17.0),
+                );
                 ui.separator();
                 let pairs = if ui.available_width() >= 440.0 { 2 } else { 1 };
                 egui::Grid::new("raw_values_grid")
@@ -1329,6 +1330,7 @@ impl RttApp {
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("新建曲线窗口").clicked() {
+                        self.new_plot_variables.fill(false);
                         self.new_plot_open = true;
                     }
                     if ui.button("CSV 回放…").clicked() {
@@ -1624,15 +1626,6 @@ impl eframe::App for RttApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).inner_margin(20.0))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading(RichText::new("RTT2").size(28.0));
-                    ui.label(RichText::new("遥测工作台").size(18.0).weak());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak());
-                    });
-                });
-                ui.label(RichText::new("实时数据 / 独立曲线 / CSV 记录").weak());
-                ui.add_space(12.0);
                 let available = ui.available_size();
                 let left_width = (available.x * 0.40).clamp(320.0, 440.0);
                 ui.horizontal_top(|ui| {
@@ -1803,6 +1796,19 @@ mod tests {
     }
 
     #[test]
+    fn shot_variable_names_map_to_firmware_payload_positions() {
+        let values: [f32; VARIABLE_COUNT] = std::array::from_fn(|i| 100.0 + i as f32);
+        for (name, expected) in [("value1", 100.0), ("value2", 101.0), ("value13", 112.0)] {
+            let index = super::variable_index(name).unwrap();
+            assert_eq!(super::RttApp::variable_name(index), name);
+            assert_eq!(values[index], expected);
+        }
+        for invalid in ["value0", "value14", "v2", "status", "value"] {
+            assert_eq!(super::variable_index(invalid), None);
+        }
+    }
+
+    #[test]
     fn clearing_one_window_keeps_shared_history_for_other_windows() {
         let mut data = LivePlotData::new();
         let values = [1.0; VARIABLE_COUNT];
@@ -1857,8 +1863,8 @@ fn chip_label(chip: &str) -> &str {
 }
 
 fn variable_index(name: &str) -> Option<usize> {
-    let number = name.strip_prefix('v')?.parse::<usize>().ok()?;
-    (2..=14).contains(&number).then_some(number - 2)
+    let number = name.strip_prefix("value")?.parse::<usize>().ok()?;
+    (1..=VARIABLE_COUNT).contains(&number).then(|| number - 1)
 }
 
 fn format_float(value: f32) -> String {

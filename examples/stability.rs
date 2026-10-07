@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let now = Instant::now();
                 if count == 0 {
                     println!(
-                        "first_sample status={:#010x} v2={} v14={}",
+                        "first_sample status={:#010x} value1={} value13={}",
                         sample.status, sample.values[0], sample.values[12]
                     );
                 }
