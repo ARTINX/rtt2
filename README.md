@@ -13,9 +13,9 @@ RTT2 目前仅支持 Windows。固件在独立的 ARTINX 工程中维护；本�
 
 ## 快速开始
 
-1. 从 v1.1 Release 下载 rtt2v1.1.exe，连接开发板和调试探针。
+1. 从 [v1.1.1 Release](https://mirrors.sustech.edu.cn/git/artinx_eee/artinx_core/rtt2/-/releases/v1.1.1) 下载 rtt2v1.1.1.exe，连接开发板和调试探针。
 2. 双击程序，选择芯片与**该板卡的 Keil 编译输出目录**。目录中需有包含 _SEGGER_RTT 符号的 .map 文件。
-3. 点击“启动 RTT 监控”。主窗口右侧显示状态和原始变量；“新建曲线窗口”可同时打开多个曲线窗口。
+3. 点击“启动 RTT 监控”。主窗口右侧显示状态和原始变量；点击“新建曲线窗口”，先选择变量，再创建独立曲线页面；可同时打开多个窗口。
 4. 根据需要开始 CSV 记录、加载 CSV 回放，或点击“记录本发”保存一次发射时的快照。
 
 | 板卡 | 芯片型号 | 工程输出目录示例 |
@@ -25,14 +25,22 @@ RTT2 目前仅支持 Windows。固件在独立的 ARTINX 工程中维护；本�
 
 程序会拒绝包含多个不同 RTT 地址的目录；请选具体板卡的输出目录。若连接到 RTT 控制块后 5 秒内没有有效遥测，程序会断开并提示检查固件或复位开发板。
 
+### 曲线查看
+
+- 每个窗口在创建时选择变量，图表随窗口缩放自动适配。
+- 默认跟随最新数据，时间跨度为 10 秒；拖动平移、Ctrl + 滚轮缩放、右键拖动框选放大后切换为“自由查看”。
+- **回到最新**：只恢复时间轴跟随，保留手动调整的时间跨度和纵轴范围。
+- **重置视图**：恢复 10 秒时间跨度并自动适配纵轴。
+- **清除曲线**：只清除当前窗口的显示历史，其他窗口和 CSV 记录不受影响。
+
 ### 命令 Shell 与 CLI
 
-GUI 左侧的命令 Shell 接受 send <cmd_id> [float 参数…]。按一次 Enter 或点击一次发送按钮只提交一次命令。当前固件实现 send 0（无参数 PING）和 send 1 1.0 2.0（ECHO，最多 12 个有限 float32）。其他命令号返回 UNKNOWN_CMD。
+GUI 右侧的命令 Shell 接受 send <cmd_id> [float 参数…]。按一次 Enter 或点击一次发送按钮只提交一次命令。当前固件实现 send 0（无参数 PING）和 send 1 1.0 2.0（ECHO，最多 12 个有限 float32）。其他命令号返回 UNKNOWN_CMD。
 
 GUI 必须先连接开发板；CLI 通过当前 Windows 用户的本地命名管道交给 GUI，自己不会连接探针：
 
 ~~~powershell
-$exe = '.\rtt2v1.1.exe'
+$exe = '.\rtt2v1.1.1.exe'
 & $exe status --json
 & $exe send 0 --json
 & $exe send 1 1.0 2.0 --json
@@ -42,7 +50,7 @@ $exe = '.\rtt2v1.1.exe'
 
 ~~~powershell
 $project = 'C:\path\to\artinx-2026-frame\bsp\cubemx\MDK-ARM\kit-miao'
-Start-Process -FilePath '.\rtt2v1.1.exe' -ArgumentList @('gui', '--project', $project, '--chip', 'STM32H723VG', '--connect')
+Start-Process -FilePath '.\rtt2v1.1.1.exe' -ArgumentList @('gui', '--project', $project, '--chip', 'STM32H723VG', '--connect')
 ~~~
 
 send --json 返回执行状态、会话 ID、序号、板端时间戳、回显值和主机测得的回执延迟。退出码：0 已执行，2 被拒绝或参数无效，3 结果未知，4 GUI 本地请求队列已满，5 GUI 未运行或未连接。命令回执默认等待 2 秒；超时不自动重试，因为板端可能已经执行。当前固件保持原有 Message_Publish 接口，内部消息队列投递失败时无法立即产生 QUEUE_FULL 回执，上位机会报告“结果未知”。

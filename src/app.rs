@@ -117,6 +117,9 @@ struct LivePlotWindowState {
     visible: [bool; VARIABLE_COUNT],
     start_after_x: Option<f64>,
     open: bool,
+    follow_latest: bool,
+    reset_view: bool,
+    freeze_scale: bool,
 }
 
 impl LivePlotWindowState {
@@ -128,11 +131,22 @@ impl LivePlotWindowState {
             visible,
             start_after_x: None,
             open: true,
+            follow_latest: true,
+            reset_view: true,
+            freeze_scale: false,
         }
     }
 
     fn clear_view(&mut self, latest_x: Option<f64>) {
         self.start_after_x = latest_x;
+        self.reset_view = true;
+        self.follow_latest = true;
+        self.freeze_scale = false;
+    }
+
+    fn resume_following(&mut self) {
+        self.follow_latest = true;
+        self.freeze_scale = true;
     }
 
     fn point_in_view(&self, point: [f64; 2]) -> Option<[f64; 2]> {
@@ -178,6 +192,8 @@ pub struct RttApp {
     live_plot_data: Arc<RwLock<LivePlotData>>,
     live_plot_windows: Vec<LivePlotWindow>,
     next_live_plot_window_id: u64,
+    new_plot_open: bool,
+    new_plot_variables: [bool; VARIABLE_COUNT],
     last_board_timestamp: Option<u32>,
     timestamp_epoch: u64,
     plot_origin_ms: Option<u64>,
@@ -203,7 +219,7 @@ impl RttApp {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
             .join("Fonts");
-        for name in ["NotoSansSC-VF.ttf", "msyh.ttc", "simhei.ttf", "Deng.ttf"] {
+        for name in ["msyh.ttc", "simhei.ttf", "Deng.ttf", "NotoSansSC-VF.ttf"] {
             if let Ok(bytes) = fs::read(font_dir.join(name)) {
                 let mut fonts = FontDefinitions::default();
                 fonts.font_data.insert(
@@ -231,6 +247,16 @@ impl RttApp {
             let mut style = (*cc.egui_ctx.style_of(theme)).clone();
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
             style.spacing.button_padding = egui::vec2(10.0, 6.0);
+            style
+                .text_styles
+                .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+            style
+                .text_styles
+                .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+            if theme == egui::Theme::Light {
+                style.visuals.panel_fill = Color32::from_rgb(241, 244, 248);
+                style.visuals.override_text_color = Some(Color32::from_rgb(35, 47, 62));
+            }
             cc.egui_ctx.set_style_of(theme, style);
         }
         let (ipc_tx, ipc_rx) = mpsc::channel();
@@ -267,6 +293,8 @@ impl RttApp {
             live_plot_data: Arc::new(RwLock::new(LivePlotData::new())),
             live_plot_windows: Vec::new(),
             next_live_plot_window_id: 1,
+            new_plot_open: false,
+            new_plot_variables: std::array::from_fn(|index| index == 0),
             last_board_timestamp: None,
             timestamp_epoch: 0,
             plot_origin_ms: None,
@@ -658,10 +686,67 @@ impl RttApp {
     fn open_live_plot_window(&mut self) {
         let id = self.next_live_plot_window_id;
         self.next_live_plot_window_id = self.next_live_plot_window_id.saturating_add(1);
+        let mut state = LivePlotWindowState::new(id);
+        state.visible = self.new_plot_variables;
         self.live_plot_windows.push(LivePlotWindow {
             id,
-            state: Arc::new(Mutex::new(LivePlotWindowState::new(id))),
+            state: Arc::new(Mutex::new(state)),
         });
+    }
+
+    fn new_plot_dialog(&mut self, ctx: &egui::Context) {
+        if !self.new_plot_open {
+            return;
+        }
+        let modal = egui::Modal::new(egui::Id::new("new_live_plot")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("新建曲线窗口");
+            ui.label("选择此窗口要显示的变量");
+            ui.add_space(8.0);
+            egui::Grid::new("new_plot_variables")
+                .num_columns(4)
+                .spacing([24.0, 12.0])
+                .show(ui, |ui| {
+                    for index in 0..VARIABLE_COUNT {
+                        ui.checkbox(
+                            &mut self.new_plot_variables[index],
+                            RichText::new(Self::variable_name(index)).color(variable_color(index)),
+                        );
+                        if index % 4 == 3 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("全选").clicked() {
+                    self.new_plot_variables.fill(true);
+                }
+                if ui.button("清空选择").clicked() {
+                    self.new_plot_variables.fill(false);
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let count = self.new_plot_variables.iter().filter(|v| **v).count();
+                if ui
+                    .add_enabled(
+                        count > 0,
+                        egui::Button::new(format!("创建窗口 · {count} 个变量")),
+                    )
+                    .clicked()
+                {
+                    self.open_live_plot_window();
+                    self.new_plot_open = false;
+                }
+                if ui.button("取消").clicked() {
+                    self.new_plot_open = false;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.new_plot_open = false;
+        }
     }
 
     fn live_plot_windows_ui(&mut self, ctx: &egui::Context) {
@@ -677,7 +762,7 @@ impl RttApp {
             let builder = egui::ViewportBuilder::default()
                 .with_title(format!("RTT 示波器 #{}", id))
                 .with_inner_size([980.0, 580.0])
-                .with_min_inner_size([700.0, 440.0])
+                .with_min_inner_size([520.0, 320.0])
                 .with_position(egui::pos2(80.0 + offset * 20.0, 80.0 + offset * 8.0));
             ctx.show_viewport_immediate(viewport_id, builder, |ui, _class| {
                 let close_requested = ui.input(|input| input.viewport().close_requested());
@@ -690,9 +775,11 @@ impl RttApp {
                     if !state.open {
                         return;
                     }
-                    egui::CentralPanel::default().show(ui, |ui| {
-                        live_plot_window_ui(ui, &mut state, &data);
-                    });
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::central_panel(ui.style()).inner_margin(16.0))
+                        .show(ui, |ui| {
+                            live_plot_window_ui(ui, &mut state, &data);
+                        });
                 }
             });
         }
@@ -994,280 +1081,321 @@ impl RttApp {
     }
 
     fn connection_ui(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
-            ui.label(RichText::new("连接控制").strong().size(17.0));
-            ui.separator();
-            let selected_chip = chip_label(&self.chip).to_owned();
-            egui::ComboBox::from_label("芯片")
-                .selected_text(selected_chip)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.chip,
-                        "STM32F407IGHx".to_owned(),
-                        "C板 · STM32F407IGHx",
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("连接控制").strong().size(17.0));
+                ui.separator();
+                let selected_chip = chip_label(&self.chip).to_owned();
+                egui::ComboBox::from_label("芯片")
+                    .selected_text(selected_chip)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.chip,
+                            "STM32F407IGHx".to_owned(),
+                            "C板 · STM32F407IGHx",
+                        );
+                        ui.selectable_value(
+                            &mut self.chip,
+                            "STM32H723VG".to_owned(),
+                            "miao · STM32H723VG",
+                        );
+                    });
+                ui.label("工程目录");
+                ui.horizontal(|ui| {
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.project_path)
+                            .desired_width((ui.available_width() - 78.0).max(180.0))
+                            .hint_text("选择包含 Listings/*.map 的工程目录"),
                     );
-                    ui.selectable_value(
-                        &mut self.chip,
-                        "STM32H723VG".to_owned(),
-                        "miao · STM32H723VG",
-                    );
-                });
-            ui.label("工程目录");
-            ui.horizontal(|ui| {
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.project_path)
-                        .desired_width((ui.available_width() - 78.0).max(180.0))
-                        .hint_text("选择包含 Listings/*.map 的工程目录"),
-                );
-                if response.changed() {
-                    self.resolved_address = None;
-                }
-                if response.lost_focus() {
-                    self.add_project_history();
-                }
-                if ui.button("浏览…").clicked() {
-                    self.browse_project();
-                }
-            });
-            egui::ComboBox::from_label("路径历史")
-                .selected_text(if self.project_history.is_empty() {
-                    "无历史路径".to_owned()
-                } else {
-                    "选择历史路径…".to_owned()
-                })
-                .show_ui(ui, |ui| {
-                    for path in &self.project_history {
-                        if ui.selectable_label(false, path).clicked() {
-                            self.project_path = path.clone();
-                            self.resolved_address = None;
-                        }
+                    if response.changed() {
+                        self.resolved_address = None;
+                    }
+                    if response.lost_focus() {
+                        self.add_project_history();
+                    }
+                    if ui.button("浏览…").clicked() {
+                        self.browse_project();
                     }
                 });
-            ui.horizontal(|ui| {
-                if ui.button("查找 RTT 地址").clicked() {
-                    self.find_address();
-                }
-                ui.label(match self.resolved_address {
-                    Some(address) => format!("地址 0x{address:08X}"),
-                    None => "地址未解析".to_owned(),
+                egui::ComboBox::from_label("路径历史")
+                    .selected_text(if self.project_history.is_empty() {
+                        "无历史路径".to_owned()
+                    } else {
+                        "选择历史路径…".to_owned()
+                    })
+                    .show_ui(ui, |ui| {
+                        for path in &self.project_history {
+                            if ui.selectable_label(false, path).clicked() {
+                                self.project_path = path.clone();
+                                self.resolved_address = None;
+                            }
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("查找 RTT 地址").clicked() {
+                        self.find_address();
+                    }
+                    ui.label(match self.resolved_address {
+                        Some(address) => format!("地址 0x{address:08X}"),
+                        None => "地址未解析".to_owned(),
+                    });
                 });
-            });
-            let button_text = if self.monitor_active {
-                "停止监控"
-            } else {
-                "启动 RTT 监控"
-            };
-            let button_color = if self.monitor_active {
-                Color32::from_rgb(174, 76, 68)
-            } else {
-                Color32::from_rgb(44, 132, 104)
-            };
-            if ui
-                .add_sized(
-                    [ui.available_width(), 34.0],
-                    egui::Button::new(RichText::new(button_text).strong().color(Color32::WHITE))
-                        .fill(button_color),
-                )
-                .clicked()
-            {
-                if self.monitor_active {
-                    self.request_stop();
+                let button_text = if self.monitor_active {
+                    "停止监控"
                 } else {
-                    self.start_monitor();
+                    "启动 RTT 监控"
+                };
+                let button_color = if self.monitor_active {
+                    Color32::from_rgb(174, 76, 68)
+                } else {
+                    Color32::from_rgb(44, 132, 104)
+                };
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 34.0],
+                        egui::Button::new(
+                            RichText::new(button_text).strong().color(Color32::WHITE),
+                        )
+                        .fill(button_color),
+                    )
+                    .clicked()
+                {
+                    if self.monitor_active {
+                        self.request_stop();
+                    } else {
+                        self.start_monitor();
+                    }
                 }
-            }
-            ui.separator();
-            let state_color = if self.connected {
-                Color32::from_rgb(53, 166, 114)
-            } else if self.monitor_active {
-                Color32::from_rgb(222, 162, 63)
-            } else {
-                Color32::from_rgb(145, 151, 163)
-            };
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("●").color(state_color).strong());
-                ui.label(
-                    RichText::new(&self.status_message)
-                        .color(state_color)
-                        .strong(),
+                ui.separator();
+                let state_color = if self.connected {
+                    Color32::from_rgb(53, 166, 114)
+                } else if self.monitor_active {
+                    Color32::from_rgb(222, 162, 63)
+                } else {
+                    Color32::from_rgb(145, 151, 163)
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("●").color(state_color).strong());
+                    ui.label(
+                        RichText::new(&self.status_message)
+                            .color(state_color)
+                            .strong(),
+                    );
+                    if let Some(address) = self.connection_address {
+                        ui.label(format!("RTT @ 0x{address:08X}"));
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("有效帧 {}", self.samples_received));
+                    ui.label(format!("CRC 错误 {}", self.crc_errors));
+                    ui.label(format!("丢帧 {}", self.lost_frames));
+                });
+                ui.add(
+                    egui::Slider::new(&mut self.refresh_interval_ms, 1..=100)
+                        .suffix(" ms")
+                        .text("界面刷新"),
                 );
-                if let Some(address) = self.connection_address {
-                    ui.label(format!("RTT @ 0x{address:08X}"));
-                }
             });
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("有效帧 {}", self.samples_received));
-                ui.label(format!("CRC 错误 {}", self.crc_errors));
-                ui.label(format!("丢帧 {}", self.lost_frames));
-            });
-            ui.add(
-                egui::Slider::new(&mut self.refresh_interval_ms, 1..=100)
-                    .suffix(" ms")
-                    .text("界面刷新"),
-            );
-        });
     }
 
     fn command_ui(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
-            ui.label(RichText::new("RTT 命令 Shell").strong().size(17.0));
-            ui.label(RichText::new("send <cmd_id> [float 参数…] · 回车或点击仅提交一次").weak());
-            let enabled = self.connected && self.command_available;
-            ui.horizontal(|ui| {
-                let input = ui.add_enabled(
-                    enabled,
-                    egui::TextEdit::singleline(&mut self.command_input)
-                        .desired_width((ui.available_width() - 84.0).max(140.0))
-                        .hint_text("send 1 1.0 2.0"),
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("RTT 命令 Shell").strong().size(17.0));
+                ui.label(
+                    RichText::new("send <cmd_id> [float 参数…] · 回车或点击仅提交一次").weak(),
                 );
-                let enter = enabled
-                    && input.lost_focus()
-                    && ui.input(|state| state.key_pressed(egui::Key::Enter));
-                let send = ui
-                    .add_enabled(enabled, egui::Button::new("单次发送"))
-                    .clicked();
-                if enter || send {
-                    self.submit_gui_command();
-                }
-            });
-            if !enabled {
-                ui.label(RichText::new("连接带有 down0/up1 命令通道的目标固件后可发送。").weak());
-            }
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt("command_result_log")
-                .max_height(180.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    if self.command_log.is_empty() {
-                        ui.label(RichText::new("命令结果将显示在这里。").weak());
-                    }
-                    for line in &self.command_log {
-                        ui.monospace(line);
+                let enabled = self.connected && self.command_available;
+                ui.horizontal(|ui| {
+                    let input = ui.add_enabled(
+                        enabled,
+                        egui::TextEdit::singleline(&mut self.command_input)
+                            .desired_width((ui.available_width() - 84.0).max(140.0))
+                            .hint_text("send 1 1.0 2.0"),
+                    );
+                    let enter = enabled
+                        && input.lost_focus()
+                        && ui.input(|state| state.key_pressed(egui::Key::Enter));
+                    let send = ui
+                        .add_enabled(enabled, egui::Button::new("单次发送"))
+                        .clicked();
+                    if enter || send {
+                        self.submit_gui_command();
                     }
                 });
-        });
+                if !enabled {
+                    ui.label(
+                        RichText::new("连接带有 down0/up1 命令通道的目标固件后可发送。").weak(),
+                    );
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("command_result_log")
+                    .max_height(180.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        if self.command_log.is_empty() {
+                            ui.label(RichText::new("命令结果将显示在这里。").weak());
+                        }
+                        for line in &self.command_log {
+                            ui.monospace(line);
+                        }
+                    });
+            });
     }
 
     fn status_and_variables_ui(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
-            ui.label(
-                RichText::new("状态字 · debug_info.status")
-                    .strong()
-                    .size(17.0),
-            );
-            ui.separator();
-            if let Some(sample) = self.latest_sample {
-                let binary = format!("{:032b}", sample.status);
-                ui.monospace(format!("31..16  {} {}", &binary[0..8], &binary[8..16]));
-                ui.monospace(format!("15..0   {} {}", &binary[16..24], &binary[24..32]));
-                ui.monospace(format!("0x{:08X}  /  {}", sample.status, sample.status));
-                ui.label(if sample.status & 1 != 0 {
-                    "bit0 慢速云台：开"
-                } else {
-                    "bit0 慢速云台：关"
-                });
-            } else {
-                ui.monospace("31..16  -------- --------");
-                ui.monospace("15..0   -------- --------");
-                ui.monospace("0x--------  /  —");
-            }
-        });
-
-        ui.group(|ui| {
-            ui.label(RichText::new("原始数据 · v2–v14").strong().size(17.0));
-            ui.separator();
-            egui::Grid::new("raw_values_grid")
-                .striped(true)
-                .num_columns(2)
-                .min_col_width(140.0)
-                .show(ui, |ui| {
-                    ui.strong("变量");
-                    ui.strong("当前值");
-                    ui.end_row();
-                    for index in 0..VARIABLE_COUNT {
-                        ui.label(Self::variable_name(index));
-                        let value = self.latest_sample.map(|sample| sample.values[index]);
-                        ui.monospace(value.map(format_float).unwrap_or_else(|| "—".to_owned()));
-                        ui.end_row();
-                    }
-                });
-            if let Some(sample) = self.latest_sample {
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new("状态字 · debug_info.status")
+                        .strong()
+                        .size(17.0),
+                );
                 ui.separator();
-                ui.monospace(format!("序号        {}", sample.seq));
-                ui.monospace(format!("板端时间    {} ms", sample.timestamp_ms));
-            }
-        });
+                if let Some(sample) = self.latest_sample {
+                    let binary = format!("{:032b}", sample.status);
+                    ui.monospace(format!("31..16  {} {}", &binary[0..8], &binary[8..16]));
+                    ui.monospace(format!("15..0   {} {}", &binary[16..24], &binary[24..32]));
+                    ui.monospace(format!("0x{:08X}  /  {}", sample.status, sample.status));
+                    ui.label(if sample.status & 1 != 0 {
+                        "bit0 慢速云台：开"
+                    } else {
+                        "bit0 慢速云台：关"
+                    });
+                } else {
+                    ui.monospace("31..16  -------- --------");
+                    ui.monospace("15..0   -------- --------");
+                    ui.monospace("0x--------  /  —");
+                }
+            });
+
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("原始数据 · v2–v14").strong().size(17.0));
+                ui.separator();
+                let pairs = if ui.available_width() >= 440.0 { 2 } else { 1 };
+                egui::Grid::new("raw_values_grid")
+                    .striped(true)
+                    .num_columns(pairs * 2)
+                    .min_col_width((ui.available_width() / (pairs * 2) as f32 - 14.0).max(50.0))
+                    .show(ui, |ui| {
+                        for _ in 0..pairs {
+                            ui.strong("变量");
+                            ui.strong("当前值");
+                        }
+                        ui.end_row();
+                        for index in 0..VARIABLE_COUNT {
+                            ui.colored_label(variable_color(index), Self::variable_name(index));
+                            let value = self.latest_sample.map(|sample| sample.values[index]);
+                            ui.monospace(value.map(format_float).unwrap_or_else(|| "—".to_owned()));
+                            if index % pairs == pairs - 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                if let Some(sample) = self.latest_sample {
+                    ui.separator();
+                    ui.monospace(format!("序号        {}", sample.seq));
+                    ui.monospace(format!("板端时间    {} ms", sample.timestamp_ms));
+                }
+            });
     }
 
     fn data_views_ui(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
-            ui.label(RichText::new("数据视图").strong().size(17.0));
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("新建曲线窗口").clicked() {
-                    self.open_live_plot_window();
-                }
-                if ui.button("CSV 回放…").clicked() {
-                    self.open_replay();
-                }
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("数据视图").strong().size(17.0));
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("新建曲线窗口").clicked() {
+                        self.new_plot_open = true;
+                    }
+                    if ui.button("CSV 回放…").clicked() {
+                        self.open_replay();
+                    }
+                });
+                let open_count = self
+                    .live_plot_windows
+                    .iter()
+                    .filter(|window| window.state.lock().is_ok_and(|state| state.open))
+                    .count();
+                ui.label(format!("已打开 {open_count} 个独立曲线窗口"));
             });
-            let open_count = self
-                .live_plot_windows
-                .iter()
-                .filter(|window| window.state.lock().is_ok_and(|state| state.open))
-                .count();
-            ui.label(format!("已打开 {open_count} 个独立曲线窗口"));
-        });
     }
 
     fn recording_ui(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
-            ui.label(RichText::new("数据记录").strong().size(17.0));
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui
-                    .button(if self.log_tx.is_some() {
-                        "停止连续 CSV"
-                    } else {
-                        "开始连续 CSV…"
-                    })
-                    .clicked()
-                {
-                    self.choose_continuous_log();
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("数据记录").strong().size(17.0));
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button(if self.log_tx.is_some() {
+                            "停止连续 CSV"
+                        } else {
+                            "开始连续 CSV…"
+                        })
+                        .clicked()
+                    {
+                        self.choose_continuous_log();
+                    }
+                    ui.label(RichText::new(&self.log_status).weak());
+                });
+                let selected_shot_variable = self.shot_variable.clone();
+                egui::ComboBox::from_label("弹速变量")
+                    .selected_text(selected_shot_variable)
+                    .show_ui(ui, |ui| {
+                        for index in 0..VARIABLE_COUNT {
+                            let name = Self::variable_name(index);
+                            ui.selectable_value(&mut self.shot_variable, name.clone(), name);
+                        }
+                    });
+                if self.shot_recorder.is_none() {
+                    if ui.button("开始发射记录 CSV…").clicked() {
+                        self.start_shot_recording();
+                    }
+                } else {
+                    let count = self
+                        .shot_recorder
+                        .as_ref()
+                        .map(|recorder| recorder.values.len())
+                        .unwrap_or(0);
+                    ui.horizontal(|ui| {
+                        if ui.button("记录本发").clicked() {
+                            self.capture_shot();
+                        }
+                        if ui.button("结束并写入统计").clicked() {
+                            self.finish_shot_recording();
+                        }
+                    });
+                    ui.label(format!("已记录 {count} 发"));
                 }
-                ui.label(RichText::new(&self.log_status).weak());
             });
-            let selected_shot_variable = self.shot_variable.clone();
-            egui::ComboBox::from_label("弹速变量")
-                .selected_text(selected_shot_variable)
-                .show_ui(ui, |ui| {
-                    for index in 0..VARIABLE_COUNT {
-                        let name = Self::variable_name(index);
-                        ui.selectable_value(&mut self.shot_variable, name.clone(), name);
-                    }
-                });
-            if self.shot_recorder.is_none() {
-                if ui.button("开始发射记录 CSV…").clicked() {
-                    self.start_shot_recording();
-                }
-            } else {
-                let count = self
-                    .shot_recorder
-                    .as_ref()
-                    .map(|recorder| recorder.values.len())
-                    .unwrap_or(0);
-                ui.horizontal(|ui| {
-                    if ui.button("记录本发").clicked() {
-                        self.capture_shot();
-                    }
-                    if ui.button("结束并写入统计").clicked() {
-                        self.finish_shot_recording();
-                    }
-                });
-                ui.label(format!("已记录 {count} 发"));
-            }
-        });
     }
 
     fn replay_window(&mut self, ctx: &egui::Context) {
@@ -1335,89 +1463,130 @@ fn live_plot_window_ui(
     ui: &mut egui::Ui,
     state: &mut LivePlotWindowState,
     shared_data: &Arc<RwLock<LivePlotData>>,
-) {
-    let (latest_values, latest_x) = shared_data
-        .read()
-        .map(|data| (data.latest_values, data.latest_x))
-        .unwrap_or(([None; VARIABLE_COUNT], None));
+) -> egui_plot::PlotResponse<()> {
+    let latest_x = shared_data.read().ok().and_then(|data| data.latest_x);
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("实时示波器").strong().size(17.0));
-        ui.label(RichText::new("左侧勾选曲线 · 每个窗口独立设置").weak());
-        if ui.button("全选").clicked() {
-            state.visible = [true; VARIABLE_COUNT];
+        ui.label(
+            RichText::new(format!("实时曲线  #{id}", id = state.id))
+                .strong()
+                .size(19.0),
+        );
+        ui.colored_label(
+            if state.follow_latest {
+                Color32::from_rgb(53, 166, 114)
+            } else {
+                Color32::from_rgb(222, 162, 63)
+            },
+            if state.follow_latest {
+                "● 跟随最新"
+            } else {
+                "● 自由查看"
+            },
+        );
+        if ui
+            .button("回到最新")
+            .on_hover_text("恢复时间轴跟随，保留当前缩放和纵轴范围")
+            .clicked()
+        {
+            state.resume_following();
         }
-        if ui.button("全不选").clicked() {
-            state.visible = [false; VARIABLE_COUNT];
+        if ui
+            .button("重置视图")
+            .on_hover_text("恢复 10 秒时间范围，自动适配纵轴")
+            .clicked()
+        {
+            state.reset_view = true;
+            state.follow_latest = true;
+            state.freeze_scale = false;
         }
-        if ui.button("清除本窗口曲线").clicked() {
+        if ui.button("清除曲线").clicked() {
             state.clear_view(latest_x);
         }
-        if ui.button("关闭窗口").clicked() {
-            state.open = false;
-            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-        }
-        ui.label(format!(
-            "显示 {} 个变量 · 最多保留 {} 点",
-            state.visible.iter().filter(|visible| **visible).count(),
-            MAX_LIVE_POINTS
-        ));
     });
-    ui.separator();
+    ui.label(
+        RichText::new("拖动平移 · Ctrl + 滚轮缩放 · 右键拖动框选放大")
+            .weak()
+            .size(12.0),
+    );
+    ui.add_space(4.0);
 
-    let plot_height = ui.available_height().max(320.0);
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(190.0);
-            ui.set_height(plot_height);
-            ui.label(RichText::new("显示变量").strong());
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt(("live_plot_variables", state.id))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for index in 0..VARIABLE_COUNT {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut state.visible[index], "");
-                            ui.colored_label(variable_color(index), RttApp::variable_name(index));
-                            if let Some(value) = latest_values[index] {
-                                ui.monospace(format_float(value));
-                            }
-                        });
-                    }
-                });
-        });
-
-        ui.separator();
-        let series = shared_data
-            .read()
-            .map(|data| {
-                (0..VARIABLE_COUNT)
-                    .filter(|&index| state.visible[index])
-                    .map(|index| {
-                        let points = PlotPoints::from_iter(
+    // Size from this viewport on every frame. No fixed-height/sidebar minimum
+    // may expand the plot past the available client area after a resize.
+    let size = ui.available_size().max(egui::vec2(1.0, 1.0));
+    let interaction_rect = ui.available_rect_before_wrap();
+    let series = shared_data
+        .read()
+        .map(|data| {
+            (0..VARIABLE_COUNT)
+                .filter(|&index| state.visible[index])
+                .map(|index| {
+                    (
+                        index,
+                        PlotPoints::from_iter(
                             data.points[index]
                                 .iter()
                                 .filter_map(|point| state.point_in_view(*point)),
-                        );
-                        (index, points)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        Plot::new(("rtt2_live_window_plot", state.id))
-            .height(plot_height)
-            .allow_zoom(true)
-            .allow_drag(true)
-            .show(ui, |plot_ui| {
-                for (index, points) in series {
-                    plot_ui.line(
-                        Line::new(RttApp::variable_name(index), points)
-                            .color(variable_color(index))
-                            .width(1.8),
-                    );
-                }
-            });
-    });
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut plot = Plot::new(("rtt2_live_window_plot", state.id))
+        .width(size.x)
+        .height(size.y)
+        .legend(Legend::default())
+        .default_x_bounds(-10.0, 0.0)
+        .auto_bounds([false, true])
+        .allow_double_click_reset(false)
+        .x_axis_label("时间 / s")
+        .allow_zoom(true)
+        .allow_drag(true);
+    if std::mem::take(&mut state.reset_view) {
+        plot = plot.reset();
+    }
+    plot.show(ui, |plot_ui| {
+        // The plot library processes gestures after this callback. Stop following
+        // before modifying bounds, including drags/zoom on the axis labels.
+        let interacting = plot_ui.ctx().input(|input| {
+            let over = input
+                .pointer
+                .hover_pos()
+                .is_some_and(|pos| interaction_rect.contains(pos));
+            let dragging = input.pointer.any_down()
+                && input
+                    .pointer
+                    .press_origin()
+                    .is_some_and(|pos| interaction_rect.contains(pos));
+            dragging
+                || (over
+                    && (input.smooth_scroll_delta != egui::Vec2::ZERO
+                        || input.zoom_delta_2d() != egui::Vec2::splat(1.0)))
+        });
+        if interacting {
+            state.follow_latest = false;
+        }
+        if std::mem::take(&mut state.freeze_scale) {
+            plot_ui.set_auto_bounds([false, false]);
+        }
+        if state.follow_latest
+            && let Some(latest) = latest_x
+        {
+            let bounds = plot_ui.plot_bounds();
+            let width = bounds.width();
+            let latest = latest - state.start_after_x.unwrap_or(0.0);
+            // Translate X only: preserve both the time span and Y range.
+            let right = latest + width * 0.02;
+            plot_ui.set_plot_bounds_x((right - width)..=right);
+        }
+        for (index, points) in series {
+            plot_ui.line(
+                Line::new(RttApp::variable_name(index), points)
+                    .color(variable_color(index))
+                    .width(1.8),
+            );
+        }
+    })
 }
 
 fn variable_color(index: usize) -> Color32 {
@@ -1452,47 +1621,61 @@ impl eframe::App for RttApp {
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(u64::from(self.refresh_interval_ms)));
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            let available = ui.available_size();
-            let left_width = (available.x * 0.42).clamp(350.0, 460.0);
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(left_width);
-                    ui.set_height(available.y);
-                    egui::ScrollArea::vertical()
-                        .id_salt("main_controls_scroll")
-                        .show(ui, |ui| {
-                            ui.heading("RTT2 实时监控");
-                            ui.label(RichText::new("连接 · 曲线 · 回放 · 记录").weak());
-                            ui.add_space(8.0);
-                            self.connection_ui(ui);
-                            ui.add_space(8.0);
-                            self.command_ui(ui);
-                            ui.add_space(8.0);
-                            self.data_views_ui(ui);
-                            ui.add_space(8.0);
-                            self.recording_ui(ui);
-                            if !self.notice.is_empty() {
-                                ui.add_space(8.0);
-                                ui.colored_label(Color32::from_rgb(175, 83, 25), &self.notice);
-                            }
-                        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).inner_margin(20.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(RichText::new("RTT2").size(28.0));
+                    ui.label(RichText::new("遥测工作台").size(18.0).weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak());
+                    });
                 });
-                ui.separator();
-                ui.vertical(|ui| {
-                    ui.set_min_width((available.x - left_width - 24.0).max(300.0));
-                    ui.set_height(available.y);
-                    egui::ScrollArea::vertical()
-                        .id_salt("main_raw_data_scroll")
-                        .show(ui, |ui| {
-                            ui.heading("实时原始数据");
-                            ui.label(RichText::new("状态与变量由主窗口统一接收").weak());
-                            ui.add_space(8.0);
-                            self.status_and_variables_ui(ui);
-                        });
+                ui.label(RichText::new("实时数据 / 独立曲线 / CSV 记录").weak());
+                ui.add_space(12.0);
+                let available = ui.available_size();
+                let left_width = (available.x * 0.40).clamp(320.0, 440.0);
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, available.y),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("main_controls_scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    self.connection_ui(ui);
+                                    ui.add_space(8.0);
+                                    self.data_views_ui(ui);
+                                    ui.add_space(8.0);
+                                    self.recording_ui(ui);
+                                    if !self.notice.is_empty() {
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            RichText::new(&self.notice)
+                                                .color(Color32::from_rgb(210, 145, 60)),
+                                        );
+                                    }
+                                });
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), available.y),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("main_raw_data_scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    self.status_and_variables_ui(ui);
+                                    ui.add_space(8.0);
+                                    self.command_ui(ui);
+                                });
+                        },
+                    );
                 });
             });
-        });
+        self.new_plot_dialog(&ctx);
         self.replay_window(&ctx);
         self.live_plot_windows_ui(&ctx);
     }
@@ -1518,7 +1701,106 @@ impl Drop for RttApp {
 mod tests {
     use super::{LivePlotData, LivePlotWindowState, VARIABLE_COUNT, backend, command_queue_error};
     use crate::command::{Command, CommandOutcome, OutcomeStatus};
+    use eframe::egui;
     use std::sync::mpsc;
+    use std::sync::{Arc, RwLock};
+
+    fn plot_frame(
+        ctx: &egui::Context,
+        size: [f32; 2],
+        events: Vec<egui::Event>,
+        state: &mut LivePlotWindowState,
+        data: &Arc<RwLock<LivePlotData>>,
+    ) -> egui_plot::PlotResponse<()> {
+        let mut response = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::central_panel(ui.style()).inner_margin(16.0))
+                    .show(ui, |ui| {
+                        response = Some(super::live_plot_window_ui(ui, state, data));
+                    });
+            },
+        );
+        output.textures_delta.clear();
+        response.unwrap()
+    }
+
+    #[test]
+    fn live_plot_fills_resized_viewport_without_overflow() {
+        let ctx = egui::Context::default();
+        let data = Arc::new(RwLock::new(LivePlotData::new()));
+        let mut state = LivePlotWindowState::new(1);
+        for size in [
+            [980.0, 580.0],
+            [1600.0, 900.0],
+            [520.0, 320.0],
+            [700.0, 440.0],
+            [980.0, 580.0],
+        ] {
+            for _ in 0..2 {
+                let response = plot_frame(&ctx, size, vec![], &mut state, &data);
+                let rect = response.response.rect;
+                assert!(rect.min.x >= 16.0 && rect.min.y > 16.0, "{rect:?}");
+                assert!((rect.max.x - (size[0] - 16.0)).abs() < 2.0, "{rect:?}");
+                // Plot response excludes the time-axis label below it.
+                assert!(
+                    rect.max.y <= size[1] - 16.0 && rect.max.y >= size[1] - 70.0,
+                    "{rect:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resume_following_preserves_manual_zoom_and_y_range() {
+        let ctx = egui::Context::default();
+        let data = Arc::new(RwLock::new(LivePlotData::new()));
+        for i in 0..400 {
+            data.write()
+                .unwrap()
+                .push_sample(i as f64 * 0.05, &[(i as f32 * 0.1).sin(); VARIABLE_COUNT]);
+        }
+        let mut state = LivePlotWindowState::new(1);
+        let size = [980.0, 580.0];
+        let first = plot_frame(&ctx, size, vec![], &mut state, &data);
+        let zoomed = plot_frame(
+            &ctx,
+            size,
+            vec![
+                egui::Event::PointerMoved(first.response.rect.center()),
+                egui::Event::Zoom(2.0),
+            ],
+            &mut state,
+            &data,
+        );
+        assert!(!state.follow_latest);
+        let before = *zoomed.transform.bounds();
+        assert!(before.width() < first.transform.bounds().width());
+        data.write()
+            .unwrap()
+            .push_sample(30.0, &[100.0; VARIABLE_COUNT]);
+        let paused = plot_frame(&ctx, size, vec![], &mut state, &data);
+        assert_eq!(*paused.transform.bounds(), before);
+        state.resume_following();
+        for latest in [30.0, 31.0, 42.0] {
+            data.write()
+                .unwrap()
+                .push_sample(latest, &[100.0; VARIABLE_COUNT]);
+            let resumed = plot_frame(&ctx, size, vec![], &mut state, &data);
+            let bounds = resumed.transform.bounds();
+            assert!((bounds.width() - before.width()).abs() < 1e-10);
+            assert_eq!(bounds.min()[1], before.min()[1]);
+            assert_eq!(bounds.max()[1], before.max()[1]);
+            assert!((bounds.max()[0] - (latest + before.width() * 0.02)).abs() < 1e-10);
+            assert!(state.follow_latest);
+        }
+    }
 
     #[test]
     fn clearing_one_window_keeps_shared_history_for_other_windows() {
