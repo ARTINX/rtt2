@@ -1,6 +1,6 @@
 # 变更记录
 
-## 未发布
+## v1.4.0 — 2026-10-24
 
 - 固件地址解析改为统一读取 ELF 符号 `_SEGGER_RTT`（`object` crate）：Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 使用同一套解析，不再解析 Keil `.map`。
 - `connect --project` 可指向目录（递归查找 `.elf`/`.axf`/`.out`）或单个固件文件。

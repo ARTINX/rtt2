@@ -74,7 +74,7 @@ fn version_help_and_stdin_eof_have_defined_exit_behavior() {
     let exe = env!("CARGO_BIN_EXE_rtt2");
     let version = Command::new(exe).arg("--version").output().unwrap();
     assert!(version.status.success());
-    assert!(String::from_utf8(version.stdout).unwrap().contains("1.3.0"));
+    assert!(String::from_utf8(version.stdout).unwrap().contains(env!("CARGO_PKG_VERSION")));
     let help = Command::new(exe).arg("--help").output().unwrap();
     assert!(help.status.success());
     let output = Command::new(exe)
