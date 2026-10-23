@@ -1,5 +1,7 @@
 # RTT2
 
+[![Release](https://github.com/hyj0824/rtt2/actions/workflows/release.yml/badge.svg)](https://github.com/hyj0824/rtt2/actions/workflows/release.yml)
+
 RTT2 是面向 ARTINX Kit-C 和 Kit-miao 的跨平台桌面调试工具，支持 Windows、Linux 和 macOS。它通过 probe-rs 连接 CMSIS-DAP 或 J-Link 探针，从固件 ELF（Keil `.axf`、armgcc/armclang `.elf`、IAR `.out`）的 `_SEGGER_RTT` 符号定位 SEGGER RTT 控制块，显示 5 ms 遥测，并通过 RTT 发送一次性命令。GUI 和常驻 CLI 接入同一个公共后端，共用探针连接；CLI 可独立工作。
 
 ## 功能
@@ -13,7 +15,7 @@ RTT2 支持 Windows、Linux 和 macOS。固件在独立的 ARTINX 工程中维�
 
 ## 快速开始
 
-1. Windows 可从 [v1.3.0 Release](https://mirrors.sustech.edu.cn/git/artinx_eee/artinx_core/rtt2/-/releases/v1.3.0) 下载 rtt2v1.3.0.exe；Linux 和 macOS 请按下方“从源码构建”生成可执行文件。连接开发板和调试探针。
+1. 从 [Releases](https://github.com/hyj0824/rtt2/releases) 下载对应平台的压缩包（Windows、Linux、macOS，各有 x86_64 与 arm64），解压后连接开发板和调试探针。Linux/macOS 首次运行前需 `chmod +x rtt2`；macOS 未签名版本可能需要在“系统设置 → 隐私与安全性”中允许，或执行 `xattr -d com.apple.quarantine rtt2`。
 2. 打开 GUI（Windows 双击程序；Linux/macOS 运行 `./rtt2 gui`），选择芯片和**该板卡的固件输出目录**（也可直接选固件文件）。程序读取固件 ELF 中的 `_SEGGER_RTT` 符号；Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 都支持。也可在“RTT 地址”中直接填写控制块地址，或把地址和目录都留空，由后端扫描 RTT 内存。
 3. 点击“启动 RTT 监控”。主窗口右侧显示状态和原始变量；点击“新建曲线窗口”，在单列列表中选择变量，再创建独立曲线页面；可同时打开多个窗口。
 4. 根据需要开始 CSV 记录、加载 CSV 回放，或点击“记录本发”保存一次发射时的快照。
@@ -37,7 +39,7 @@ RTT2 支持 Windows、Linux 和 macOS。固件在独立的 ARTINX 工程中维�
 
 ### 常驻 CLI
 
-Windows 双击 EXE 打开 GUI；在 CMD、PowerShell 中运行 EXE 进入 `rtt2>`。Linux 和 macOS 在终端运行 `./rtt2` 进入 CLI，运行 `./rtt2 gui` 打开 GUI；把可执行文件放到 PATH 后可直接使用 `rtt2`。也可用 `rtt2 cli` 明确指定 CLI。以下假定将可执行文件命名为 `rtt2`（Windows 为 `rtt2.exe`）；下载的 `rtt2v1.3.0.exe` 用法相同。
+Windows 双击 EXE 打开 GUI；在 CMD、PowerShell 中运行 EXE 进入 `rtt2>`。Linux 和 macOS 在终端运行 `./rtt2` 进入 CLI，运行 `./rtt2 gui` 打开 GUI；把可执行文件放到 PATH 后可直接使用 `rtt2`。也可用 `rtt2 cli` 明确指定 CLI。以下假定将可执行文件命名为 `rtt2`（Windows 为 `rtt2.exe`）；从 Release 压缩包解压出的文件用法相同。
 
 ```text
 > rtt2
