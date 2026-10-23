@@ -15,7 +15,7 @@ RTT2 支持 Windows、Linux 和 macOS。固件在独立的 ARTINX 工程中维�
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/hyj0824/rtt2/releases) 下载对应平台的压缩包（Windows、Linux、macOS，各有 x86_64 与 arm64），解压后连接开发板和调试探针。Linux/macOS 首次运行前需 `chmod +x rtt2`；macOS 未签名版本可能需要在“系统设置 → 隐私与安全性”中允许，或执行 `xattr -d com.apple.quarantine rtt2`。
+1. 从 [Releases](https://github.com/hyj0824/rtt2/releases) 下载对应平台的压缩包（Windows x86_64、Linux x86_64/arm64、macOS Apple Silicon；Intel Mac 可按下方“从源码构建”生成），解压后连接开发板和调试探针。Linux/macOS 首次运行前需 `chmod +x rtt2`；macOS 未签名版本可能需要在“系统设置 → 隐私与安全性”中允许，或执行 `xattr -d com.apple.quarantine rtt2`。
 2. 打开 GUI（Windows 双击程序；Linux/macOS 运行 `./rtt2 gui`），选择芯片和**该板卡的固件输出目录**（也可直接选固件文件）。程序读取固件 ELF 中的 `_SEGGER_RTT` 符号；Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 都支持。也可在“RTT 地址”中直接填写控制块地址，或把地址和目录都留空，由后端扫描 RTT 内存。
 3. 点击“启动 RTT 监控”。主窗口右侧显示状态和原始变量；点击“新建曲线窗口”，在单列列表中选择变量，再创建独立曲线页面；可同时打开多个窗口。
 4. 根据需要开始 CSV 记录、加载 CSV 回放，或点击“记录本发”保存一次发射时的快照。
