@@ -202,6 +202,16 @@ pub fn probe() -> Result<Status, String> {
     decode(response?)
 }
 
+/// Status query for a background poller that must not detach the shared lease
+/// owned by the frontend it belongs to.
+pub fn poll_status(client_id: &str) -> Result<Status, String> {
+    let response: Response = local_pipe::request(&Request {
+        client: client_id.to_owned(),
+        operation: Operation::Status,
+    })?;
+    decode(response?)
+}
+
 fn config_path() -> PathBuf {
     crate::paths::app_config_dir().join("connection.json")
 }
@@ -231,14 +241,11 @@ impl Capture {
         if duration.is_zero() {
             return Err("采集时长太短".into());
         }
-        let path = Path::new(file);
-        if file.trim().is_empty() {
-            return Err("文件名不能为空".into());
-        }
+        let path = crate::paths::resolve_user_path(file)?;
         let output = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(path)
+            .open(&path)
             .map_err(|e| format!("无法创建 {}（不会覆盖已有文件）：{e}", path.display()))?;
         let mut writer = csv::Writer::from_writer(output);
         let mut headers = vec![
@@ -261,8 +268,8 @@ impl Capture {
             crc_start,
             report: CaptureReport {
                 id,
-                file: fs::canonicalize(path)
-                    .unwrap_or_else(|_| path.to_owned())
+                file: fs::canonicalize(&path)
+                    .unwrap_or_else(|_| path.clone())
                     .display()
                     .to_string(),
                 state: "running".into(),
@@ -445,6 +452,12 @@ impl Core {
     fn connect(&mut self, mut config: ConnectionConfig) -> Response {
         if !matches!(config.chip.as_str(), "STM32F407IGHx" | "STM32H723VG") {
             return Err("芯片必须为 STM32F407IGHx 或 STM32H723VG".into());
+        }
+        if let Some(project) = config.project.as_ref() {
+            // `~` and relative paths are resolved here so every frontend and
+            // the persisted connection.json share one absolute path.
+            let resolved = crate::paths::resolve_user_path(project)?;
+            config.project = Some(resolved.display().to_string());
         }
         if let Some(project) = config.project.as_ref()
             && config.address.is_none()

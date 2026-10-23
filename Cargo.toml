@@ -12,6 +12,9 @@ egui_plot = { version = "0.37.0", optional = true }
 object = { version = "0.39.1", default-features = false, features = ["read_core", "elf", "std"] }
 probe-rs = "0.32.0"
 rfd = { version = "0.15.4", optional = true }
+# Line editing (cursor keys, history) for the interactive shell. The default
+# key bindings and file-backed history are enough; completion is ours.
+rustyline = { version = "19.0.0", default-features = false, features = ["with-file-history"] }
 csv = "1.3.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

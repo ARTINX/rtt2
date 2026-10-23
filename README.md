@@ -8,7 +8,7 @@ RTT2 是面向 ARTINX Kit-C 和 Kit-miao 的跨平台桌面调试工具，支持
 
 - 实时显示 debug_info.status（32 位二进制、十六进制、十进制）和 value1 至 value13 的数值。
 - 多个独立曲线窗口共用主窗口接收的数据；支持 CSV 记录、回放和单次发射记录。
-- 常驻 CLI 支持 connect、send、catch、wait、status、disconnect、quit；命令按会话和序号匹配执行回执。
+- 常驻 CLI 支持 connect、send、catch、wait、status、disconnect、quit；命令按会话和序号匹配执行回执。终端输入行支持 readline 式光标编辑、历史翻阅、Tab 补全，路径支持 `~` 展开。
 - 遥测含序号、板端时间戳和 CRC16；坏帧与丢帧分别统计。
 
 RTT2 支持 Windows、Linux 和 macOS。固件在独立的 ARTINX 工程中维护；本仓库只包含上位机代码。使用前请编译并烧录支持 RTT2 协议的固件。Linux 上访问调试探针通常需要 udev 规则或相应的用户组权限；macOS 使用 CMSIS-DAP 通常无需额外驱动，J-Link 请安装 SEGGER 软件。
@@ -56,13 +56,17 @@ Linux/macOS 的路径写法不同，例如：
 
 ```text
 rtt2> connect --project "/home/me/firmware/bsp/cubemx/MDK-ARM/kit-miao" --chip STM32H723VG
+rtt2> connect --project ~/workspace/artinx-frame-2027/bsp/cubemx/MDK-ARM/kit-miao --chip STM32H723VG
 ```
 
+终端里的输入行支持 readline 式编辑：方向键/Home/End/Ctrl+A/E 移动光标，Ctrl+W 删词，Ctrl+U 清行，↑/↓ 翻阅历史，Ctrl+R 反向搜索，Tab 补全命令、`connect` 选项和芯片型号。历史保存在数据目录的 `cli_history.txt`，跨终端保留。Ctrl+C 放弃当前输入行，Ctrl+D 或 `quit` 退出；`rtt2 cli --json`、管道和脚本仍使用原来的逐行输入，不受影响。
+
+- 路径可写 `~`（如 `~/workspace/fw`）或绝对/相对路径；相对路径以终端当前目录为基准，`catch` 的文件名同样支持 `~`。
 - 首次连接指定芯片和具体板卡输出目录或固件文件（`.elf`/`.axf`/`.out`），由程序读取 `_SEGGER_RTT` 符号。连接成功后保存配置，下次可直接 `connect`。Kit-C 的芯片为 `STM32F407IGHx`，Kit-miao 为 `STM32H723VG`。配置位置：Windows 为 `%LOCALAPPDATA%\RTT2\connection.json`，macOS 为 `~/Library/Application Support/RTT2/connection.json`，Linux 为 `$XDG_CONFIG_HOME/RTT2/connection.json`（默认 `~/.config/RTT2/`）。也可用 `--address 0x20009fa4` 直接指定地址（适合 ELF 已 strip 的情况），或只给 `--chip` 由后端扫描 RTT 内存。
 - `catch <秒数> <文件名>` 从现在开始后台采集，期间仍可 `send`；`wait` 等待文件写完。时长支持小数，范围为大于 0 至 86400 秒。CSV 包含序号、板端时间戳、status、status_hex 和 value1–value13；已有文件不会覆盖。
 - `status` 返回连接情况、最新一帧、CRC/丢帧统计和采集进度。`cancel` 结束本终端的采集并保留部分文件。
 - `gui` 打开接入当前连接的图形界面。关闭任一界面不会断开其他界面仍在使用的连接；`disconnect` 会明确断开所有界面共用的板卡连接。最后一个界面退出后，后端自动释放探针并退出。
-- `quit`、输入结束或 Ctrl+C 会结束当前终端；由它发起的未完成采集会保存为部分文件。脚本请先 `wait` 再 `quit`。
+- `quit`、Ctrl+D 或输入结束会结束当前终端；由它发起的未完成采集会保存为部分文件。提示符处的 Ctrl+C 只放弃当前输入行；执行命令期间的 Ctrl+C 仍会结束终端。脚本请先 `wait` 再 `quit`。
 
 当前固件命令为 `send 0`（无参数 PING）和 `send 1 1.0 2.0`（ECHO，最多 12 个有限 float32）。GUI 内的命令 Shell 保留相同的 `send` 用法。板端回执超时为 2 秒，超时报告“结果未知”，不自动重发。
 

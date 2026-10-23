@@ -18,6 +18,26 @@ Windows 在 PowerShell 当前目录下使用 `./rtt2.exe`；Linux 和 macOS 使�
 
 使用 `cargo build --release --locked --no-default-features` 构建的 CLI-only 版本始终进入命令行，`rtt2 gui` 和 CLI 内的 `gui` 命令会提示未包含 GUI。
 
+## 终端编辑与历史
+
+终端模式下（标准输入和标准输出都连着终端，且未加 `--json`）输入行支持 readline 式编辑：
+
+| 按键 | 作用 |
+| --- | --- |
+| ←/→、Ctrl+B/Ctrl+F | 左右移动光标 |
+| Home/End、Ctrl+A/Ctrl+E | 行首/行尾 |
+| Ctrl+←/→、Alt+B/Alt+F | 按词移动 |
+| Backspace/Delete、Ctrl+W | 删除字符/前一个词 |
+| Ctrl+U | 删除整行 |
+| ↑/↓ | 翻阅历史；Ctrl+R 反向增量搜索 |
+| Tab | 补全命令、`connect` 选项和芯片型号 |
+| Ctrl+C | 放弃当前输入行（不退出终端） |
+| Ctrl+D | 输入结束时退出终端 |
+
+历史保存在数据目录的 `cli_history.txt`（Windows `%LOCALAPPDATA%\RTT2\`，macOS `~/Library/Application Support/RTT2/`，Linux `$XDG_DATA_HOME/RTT2/`，默认 `~/.local/share/RTT2/`），最多 2000 条，跨终端保留。
+
+`catch` 完成或中断时，即使正在输入，结果也会打印在提示符上方并重绘当前行。
+
 ## 连接与发送
 
 ```text
@@ -40,7 +60,7 @@ connect --project "/home/me/firmware/bsp/cubemx/MDK-ARM/kit-miao" --chip STM32H7
 connect --project "/home/me/firmware/build/firmware.elf" --chip STM32H723VG
 ```
 
-Kit-C 芯片为 `STM32F407IGHx`。路径中有空格时加双引号或单引号；Windows 反斜杠保持原样。`--project` 可指向板卡输出目录或单个固件文件；目录会被递归搜索 `.elf`、`.axf`、`.out`（最多 8 层，跳过 `.git`、`target`、`node_modules`、`.venv`），并读取与已烧录固件匹配的 `_SEGGER_RTT` 符号。Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 都是 ELF，读取方式相同；`.map` 不再作为地址来源。存在多个不同 RTT 地址时拒绝连接。
+Kit-C 芯片为 `STM32F407IGHx`。路径可写 `~`、`~/目录` 或绝对/相对路径：`~` 展开为当前用户主目录，相对路径以终端当前目录为基准。路径中有空格时加双引号或单引号；Windows 反斜杠保持原样。`--project` 可指向板卡输出目录或单个固件文件；目录会被递归搜索 `.elf`、`.axf`、`.out`（最多 8 层，跳过 `.git`、`target`、`node_modules`、`.venv`），并读取与已烧录固件匹配的 `_SEGGER_RTT` 符号。Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 都是 ELF，读取方式相同；`.map` 不再作为地址来源。存在多个不同 RTT 地址时拒绝连接。
 
 `--address` 直接指定 RTT 控制块地址（十六进制用 `0x` 前缀，`nm`/`readelf` 输出的裸十六进制也可），优先于 `--project`；指定地址后会清掉保存的工程目录，之后裸 `connect` 继续使用该地址。省略两者并只给 `--chip` 时，由后端扫描 RAM 定位控制块。
 
@@ -58,7 +78,7 @@ send 0
 wait
 ```
 
-`catch <duration> <file_name>` 的时长单位为秒，支持 `10`、`0.5`、`10s`；范围大于 0 且不超过 86400 秒。文件按 CSV 写入，扩展名由用户决定。相对路径以终端当前目录为基准；父目录必须存在，已有文件一律拒绝覆盖。
+`catch <duration> <file_name>` 的时长单位为秒，支持 `10`、`0.5`、`10s`；范围大于 0 且不超过 86400 秒。文件按 CSV 写入，扩展名由用户决定。相对路径以终端当前目录为基准，也支持 `~/文件名.csv`；父目录必须存在，已有文件一律拒绝覆盖。
 
 采集从命令被后端接受后开始，按主机收到数据的单调时间计时。它记录此后收到的样本，不导出之前的曲线历史；板端 timestamp_ms 保留原值。实际帧率和丢帧取决于固件、探针与主机，不保证每 5 ms 都收到一帧。
 
@@ -66,7 +86,7 @@ wait
 
 CSV 列为 `seq,timestamp_ms,status,status_hex,value1,...,value13`。采集结束输出文件绝对路径、请求/实际时长、帧数、采样序号间隙数、序号重置数、CRC 错误增量和完成状态。CRC 计数由后端周期统计更新，因此短采集的 CRC 增量不是逐字节精确审计。丢帧数按采集窗口内相邻有效帧序号统计，不包含第一帧之前或最后一帧之后的丢失。
 
-完成状态：`completed` 正常到时，`interrupted` 提前结束，`error` 写入失败。断连、quit、输入结束和 Ctrl+C 会保存部分文件；需要完整采集时先 `wait` 再 `quit`。
+完成状态：`completed` 正常到时，`interrupted` 提前结束，`error` 写入失败。断连、`quit`、输入结束和 Ctrl+C 会保存部分文件；需要完整采集时先 `wait` 再 `quit`。终端提示符处的 Ctrl+C 只放弃当前输入行，不会退出，也不会中断采集；要提前结束终端请用 Ctrl+D 或 `quit`。
 
 ## CLI 与 GUI
 

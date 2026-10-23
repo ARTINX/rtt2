@@ -1,5 +1,12 @@
 # 变更记录
 
+## 未发布
+
+- 终端输入行改为 readline 式编辑：方向键/Home/End/Ctrl+A/E、Ctrl+W/U、↑/↓ 历史、Ctrl+R 搜索、Tab 补全；历史保存在 `cli_history.txt` 跨终端保留。
+- `catch` 完成时即使正在输入也会在提示符上方显示结果并重绘当前行；提示符处的 Ctrl+C 只放弃当前输入行，Ctrl+D 退出。
+- 路径统一支持 `~` 展开并保存为绝对路径；修复 `~/workspace/...` 被当成相对路径拼接到当前目录的问题。CLI 的 `--project`/`catch`、GUI 的工程目录、`rtt2 gui --project` 和会话后端均使用同一套解析。
+- `--json`、管道和脚本模式保持逐行输入与 JSONL 输出不变。
+
 ## v1.4.0 — 2026-10-24
 
 - 固件地址解析改为统一读取 ELF 符号 `_SEGGER_RTT`（`object` crate）：Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 使用同一套解析，不再解析 Keil `.map`。

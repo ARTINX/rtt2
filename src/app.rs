@@ -326,8 +326,10 @@ impl RttApp {
 
     fn browse_project(&mut self) {
         let mut dialog = rfd::FileDialog::new().set_title("选择板卡输出目录");
-        if Path::new(&self.project_path).is_dir() {
-            dialog = dialog.set_directory(&self.project_path);
+        if let Ok(path) = rtt2::paths::resolve_user_path(self.project_path.trim())
+            && path.is_dir()
+        {
+            dialog = dialog.set_directory(path);
         }
         if let Some(path) = dialog.pick_folder() {
             self.project_path = path.display().to_string();
@@ -339,8 +341,10 @@ impl RttApp {
     fn browse_firmware(&mut self) {
         let mut dialog = rfd::FileDialog::new().set_title("选择固件文件");
         dialog = dialog.add_filter("固件", &["elf", "axf", "out"]);
-        if Path::new(&self.project_path).is_dir() {
-            dialog = dialog.set_directory(&self.project_path);
+        if let Ok(path) = rtt2::paths::resolve_user_path(self.project_path.trim())
+            && path.is_dir()
+        {
+            dialog = dialog.set_directory(path);
         }
         if let Some(path) = dialog.pick_file() {
             self.project_path = path.display().to_string();
@@ -351,12 +355,18 @@ impl RttApp {
 
     fn add_project_history(&mut self) {
         let path = self.project_path.trim();
-        if path.is_empty() || !Path::new(path).exists() {
+        if path.is_empty() {
             return;
         }
-        let canonical = fs::canonicalize(path)
+        let Ok(path) = rtt2::paths::resolve_user_path(path) else {
+            return;
+        };
+        if !path.exists() {
+            return;
+        }
+        let canonical = fs::canonicalize(&path)
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| path.to_owned());
+            .unwrap_or_else(|_| path.display().to_string());
         self.project_path = canonical.clone();
         self.project_history
             .retain(|entry| !entry.eq_ignore_ascii_case(&canonical));
@@ -395,7 +405,15 @@ impl RttApp {
                 "先填写工程目录或 RTT 地址；两者都留空时由后端扫描 RTT 内存定位控制块。".to_owned();
             return false;
         }
-        match address::find_rtt_address(Path::new(path)) {
+        let path = match rtt2::paths::resolve_user_path(path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.resolved_address = None;
+                self.notice = error;
+                return false;
+            }
+        };
+        match address::find_rtt_address(&path) {
             Ok(address) => {
                 self.resolved_address = Some(address);
                 self.notice = format!("找到 RTT 控制块地址：0x{address:08X}");
@@ -424,7 +442,20 @@ impl RttApp {
                 return;
             }
         };
-        let project = self.project_path.trim().to_owned();
+        let project = if self.project_path.trim().is_empty() {
+            String::new()
+        } else {
+            match rtt2::paths::resolve_user_path(self.project_path.trim()) {
+                Ok(path) => path.display().to_string(),
+                Err(error) => {
+                    if manual.is_none() {
+                        self.notice = error;
+                        return;
+                    }
+                    String::new()
+                }
+            }
+        };
         let address = if let Some(address) = manual {
             self.resolved_address = Some(address);
             Some(address)
@@ -1116,7 +1147,7 @@ impl RttApp {
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.project_path)
                             .desired_width((ui.available_width() - 150.0).max(140.0))
-                            .hint_text("板卡输出目录或固件文件（.elf/.axf/.out）"),
+                            .hint_text("板卡输出目录或固件文件（.elf/.axf/.out），支持 ~/fw"),
                     );
                     if response.changed() {
                         self.resolved_address = None;

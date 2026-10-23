@@ -4,8 +4,6 @@ mod app;
 #[cfg(feature = "gui")]
 use app::{LaunchConfig, RttApp};
 use rtt2::{cli, session};
-#[cfg(feature = "gui")]
-use std::path::PathBuf;
 
 fn main() {
     let code = match run() {
@@ -143,7 +141,8 @@ fn parse_gui_args(args: Vec<String>) -> Result<LaunchConfig, String> {
                 if path.trim().is_empty() {
                     return Err("--project 工程目录不能为空".to_owned());
                 }
-                config.project_path = Some(PathBuf::from(path).display().to_string());
+                config.project_path =
+                    Some(rtt2::paths::resolve_user_path(&path)?.display().to_string());
             }
             "--chip" => {
                 let chip = iter
