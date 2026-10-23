@@ -1,7 +1,7 @@
 mod app;
 
 use app::{LaunchConfig, RttApp};
-use rtt2::{command, ipc};
+use rtt2::{cli, session};
 use std::path::PathBuf;
 
 fn main() {
@@ -20,75 +20,50 @@ fn main() {
 fn run() -> Result<i32, String> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("send") => run_send(args.collect()),
-        Some("status") => run_status(args.collect()),
+        Some("--session-worker") => session::run_worker().map(|()| 0),
+        Some("cli") => cli::run(args.collect()),
         Some("gui") => run_gui(parse_gui_args(args.collect())?),
+        Some("--help" | "-h" | "help") => {
+            println!(
+                "RTT2 v{}\nrtt2             终端中进入 CLI；双击打开 GUI\nrtt2 cli [--json]  常驻交互终端\nrtt2 gui [--project <dir> --chip <target> --connect]\nCLI 命令：connect, send, catch, wait, status, cancel, disconnect, gui, help, quit",
+                env!("CARGO_PKG_VERSION")
+            );
+            Ok(0)
+        }
+        Some("--version" | "-V") => {
+            println!("RTT2 {}", env!("CARGO_PKG_VERSION"));
+            Ok(0)
+        }
         Some(other) => Err(format!(
-            "未知子命令 {other}。用法：rtt2.exe [gui [--project <dir> --chip <target> --connect]] | send <cmd_id> [float ...] --json | status --json"
+            "未知启动参数 {other}。运行 rtt2 进入终端后输入命令；rtt2 --help 查看用法"
         )),
+        None if launched_from_terminal() => cli::run(Vec::new()),
         None => run_gui(LaunchConfig::default()),
     }
 }
 
-fn run_send(args: Vec<String>) -> Result<i32, String> {
-    let command_tokens = args
-        .into_iter()
-        .filter(|arg| arg != "--json")
-        .collect::<Vec<_>>();
-    let command = match command::parse_shell_command(&format!("send {}", command_tokens.join(" ")))
-    {
-        Ok(command) => command,
-        Err(error) => {
-            println!(
-                "{}",
-                serde_json::json!({"status": "invalid_request", "error": error})
-            );
-            return Ok(2);
-        }
-    };
-    match ipc::send_from_cli(command.clone()) {
-        Ok(outcome) => {
-            println!(
-                "{}",
-                serde_json::to_string(&outcome).unwrap_or_else(|_| "{}".to_owned())
-            );
-            Ok(outcome.exit_code())
-        }
-        Err(error) => {
-            let outcome = ipc::unavailable_outcome(&command, error);
-            println!(
-                "{}",
-                serde_json::to_string(&outcome).unwrap_or_else(|_| "{}".to_owned())
-            );
-            Ok(outcome.exit_code())
-        }
+// A console-subsystem exe gets a new console when Explorer launches it.
+// With only this process attached it is a double-click. Existing shells have
+// another attached process; redirected stdin/stdout also select the CLI.
+#[cfg(windows)]
+fn launched_from_terminal() -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetConsoleProcessList(processes: *mut u32, count: u32) -> u32;
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+        fn GetFileType(handle: *mut std::ffi::c_void) -> u32;
+    }
+    let mut processes = [0u32; 8];
+    unsafe {
+        GetConsoleProcessList(processes.as_mut_ptr(), processes.len() as u32) > 1
+            || [-10i32, -11]
+                .iter()
+                .any(|which| matches!(GetFileType(GetStdHandle(*which as u32)), 1 | 3))
     }
 }
-
-fn run_status(args: Vec<String>) -> Result<i32, String> {
-    if args.iter().any(|arg| arg != "--json") {
-        println!(
-            "{}",
-            serde_json::json!({"status": "invalid_request", "error": "用法：rtt2.exe status --json"})
-        );
-        return Ok(2);
-    }
-    match ipc::status_from_cli() {
-        Ok(status) => {
-            println!(
-                "{}",
-                serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_owned())
-            );
-            Ok(0)
-        }
-        Err(error) => {
-            println!(
-                "{}",
-                serde_json::json!({"status": "connection_failed", "error": error})
-            );
-            Ok(5)
-        }
-    }
+#[cfg(not(windows))]
+fn launched_from_terminal() -> bool {
+    true
 }
 
 fn parse_gui_args(args: Vec<String>) -> Result<LaunchConfig, String> {
@@ -147,6 +122,7 @@ fn detach_gui_console() {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetConsoleWindow() -> *mut c_void;
+        fn GetConsoleProcessList(processes: *mut u32, count: u32) -> u32;
         fn FreeConsole() -> i32;
     }
     #[link(name = "user32")]
@@ -157,7 +133,8 @@ fn detach_gui_console() {
     const SW_HIDE: i32 = 0;
     unsafe {
         let window = GetConsoleWindow();
-        if !window.is_null() {
+        let mut processes = [0u32; 8];
+        if !window.is_null() && GetConsoleProcessList(processes.as_mut_ptr(), 8) <= 1 {
             // Hide first, then detach. Console-subsystem CLI invocations stay
             // attached and inherit stdout; only GUI startup closes its console.
             ShowWindow(window, SW_HIDE);

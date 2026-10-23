@@ -20,7 +20,7 @@ pub struct CommandRequest {
     pub reply: Sender<CommandOutcome>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     Connected {
         address: u64,
@@ -34,6 +34,8 @@ pub enum Event {
         down0_write_us: u64,
     },
     Error(String),
+    CommandObserved(CommandOutcome),
+    CaptureState(Option<crate::session::CaptureReport>),
     Disconnected,
 }
 

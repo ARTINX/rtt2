@@ -10,12 +10,67 @@ pub const VERSION: u8 = 3;
 pub const FRAME_LEN: usize = 70;
 pub const VALUE_COUNT: usize = 13;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Sample {
     pub seq: u32,
     pub timestamp_ms: u32,
     pub status: u32,
+    #[serde(with = "sample_values")]
     pub values: [f32; VALUE_COUNT],
+}
+
+// JSON has no NaN/infinity number literals. Keep non-finite telemetry visible
+// using explicit strings, rather than turning it into null or losing IPC.
+mod sample_values {
+    use super::VALUE_COUNT;
+    use serde::{Deserialize, Deserializer, Serializer, ser::SerializeSeq};
+    pub fn serialize<S: Serializer>(
+        values: &[f32; VALUE_COUNT],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(VALUE_COUNT))?;
+        for value in values {
+            if value.is_finite() {
+                seq.serialize_element(value)?;
+            } else {
+                seq.serialize_element(if value.is_nan() {
+                    "NaN"
+                } else if value.is_sign_positive() {
+                    "Infinity"
+                } else {
+                    "-Infinity"
+                })?;
+            }
+        }
+        seq.end()
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[f32; VALUE_COUNT], D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Number {
+            Finite(f32),
+            Special(String),
+        }
+        let values = Vec::<Number>::deserialize(deserializer)?;
+        if values.len() != VALUE_COUNT {
+            return Err(serde::de::Error::custom("遥测必须有 13 个值"));
+        }
+        let mut output = [0.0; VALUE_COUNT];
+        for (out, value) in output.iter_mut().zip(values) {
+            *out = match value {
+                Number::Finite(value) => value,
+                Number::Special(value) => match value.as_str() {
+                    "NaN" => f32::NAN,
+                    "Infinity" => f32::INFINITY,
+                    "-Infinity" => f32::NEG_INFINITY,
+                    _ => return Err(serde::de::Error::custom("未知的特殊浮点值")),
+                },
+            };
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

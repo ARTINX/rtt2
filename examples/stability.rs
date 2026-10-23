@@ -100,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(error.into());
             }
             Ok(backend::Event::Disconnected) => break,
+            Ok(backend::Event::CommandObserved(_) | backend::Event::CaptureState(_)) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(error.into()),
         }

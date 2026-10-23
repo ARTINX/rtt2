@@ -2,8 +2,7 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, RichTex
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use rtt2::{
     address, backend,
-    command::{self, Command, CommandOutcome, OutcomeStatus},
-    ipc,
+    command::{self, CommandOutcome, OutcomeStatus},
     protocol::Sample,
 };
 use std::collections::VecDeque;
@@ -21,7 +20,6 @@ const MAX_PROJECT_HISTORY: usize = 10;
 const DEFAULT_REFRESH_MS: u32 = 5;
 const MAX_COMMAND_LOG: usize = 64;
 const MAX_BACKEND_EVENTS_PER_FRAME: usize = 512;
-const MAX_IPC_REQUESTS_PER_FRAME: usize = 128;
 
 #[derive(Clone, Debug, Default)]
 pub struct LaunchConfig {
@@ -179,7 +177,7 @@ pub struct RttApp {
     command_replies: Vec<Receiver<CommandOutcome>>,
     command_input: String,
     command_log: VecDeque<String>,
-    ipc_rx: Receiver<ipc::IncomingRequest>,
+    shared_capture: Option<rtt2::session::CaptureReport>,
 
     latest_sample: Option<SampleSnapshot>,
     samples_received: u64,
@@ -211,7 +209,15 @@ pub struct RttApp {
 }
 
 impl RttApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, config: LaunchConfig) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, mut config: LaunchConfig) -> Self {
+        // Join an already running CLI/GUI session without opening another probe.
+        if let Ok(status) = rtt2::session::probe()
+            && (status.connected || status.connecting)
+        {
+            config.chip = Some(status.config.chip);
+            config.project_path = Some(status.config.project.unwrap_or_default());
+            config.auto_connect = true;
+        }
         // egui's bundled Latin fonts do not cover the Chinese UI labels.
         // Read an installed Windows font at runtime, keeping distribution to
         // one exe without bundling a third-party font or font license.
@@ -259,8 +265,6 @@ impl RttApp {
             }
             cc.egui_ctx.set_style_of(theme, style);
         }
-        let (ipc_tx, ipc_rx) = mpsc::channel();
-        let _ipc_server = ipc::spawn_server(ipc_tx);
         let mut app = Self {
             chip: config.chip.unwrap_or_else(|| "STM32F407IGHx".to_owned()),
             project_path,
@@ -281,7 +285,7 @@ impl RttApp {
             command_replies: Vec::new(),
             command_input: String::new(),
             command_log: VecDeque::new(),
-            ipc_rx,
+            shared_capture: None,
             latest_sample: None,
             samples_received: 0,
             last_sequence: None,
@@ -397,9 +401,16 @@ impl RttApp {
         let (command_tx, command_rx) = mpsc::sync_channel(backend::COMMAND_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
         let command_state = Arc::new(AtomicBool::new(false));
-        self.monitor_thread = Some(backend::spawn_monitor_with_commands(
-            self.chip.clone(),
-            address,
+        self.monitor_thread = Some(rtt2::session::spawn_frontend(
+            rtt2::session::ConnectionConfig {
+                chip: self.chip.clone(),
+                project: if self.project_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(self.project_path.clone())
+                },
+                address,
+            },
             tx,
             Arc::clone(&stop),
             command_rx,
@@ -424,6 +435,9 @@ impl RttApp {
     }
 
     fn request_stop(&mut self) {
+        if let Ok(client) = rtt2::session::Client::attach() {
+            let _ = client.call(rtt2::session::Operation::Disconnect);
+        }
         if let Some(stop) = &self.stop_flag {
             stop.store(true, Ordering::Release);
         }
@@ -460,6 +474,13 @@ impl RttApp {
                     self.rtt_down0_write_us = 0;
                 }
                 backend::Event::Sample(sample) => self.consume_sample(&sample),
+                backend::Event::CaptureState(report) => self.shared_capture = report,
+                backend::Event::CommandObserved(outcome) => {
+                    let line = format_outcome(&outcome);
+                    if !self.command_log.iter().any(|entry| *entry == line) {
+                        self.push_command_log(line);
+                    }
+                }
                 backend::Event::Error(error) => {
                     self.notice = error;
                 }
@@ -488,38 +509,6 @@ impl RttApp {
         }
     }
 
-    fn poll_ipc_commands(&mut self) {
-        for _ in 0..MAX_IPC_REQUESTS_PER_FRAME {
-            let incoming = match self.ipc_rx.try_recv() {
-                Ok(incoming) => incoming,
-                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
-            };
-            match incoming {
-                ipc::IncomingRequest::Status(reply) => {
-                    let _ = reply.send(self.gui_status());
-                }
-                ipc::IncomingRequest::Send { command, reply } => {
-                    self.dispatch_cli_command(command, reply);
-                }
-            }
-        }
-    }
-
-    fn gui_status(&self) -> ipc::GuiStatus {
-        ipc::GuiStatus {
-            connected: self.connected,
-            command_available: self.command_available,
-            chip: self.chip.clone(),
-            rtt_address: self.connection_address,
-            samples_received: self.samples_received,
-            crc_errors: self.crc_errors,
-            lost_frames: self.lost_frames,
-            rtt_up0_read_ms: self.rtt_up0_read_us as f64 / 1_000.0,
-            rtt_up1_read_ms: self.rtt_up1_read_us as f64 / 1_000.0,
-            rtt_down0_write_ms: self.rtt_down0_write_us as f64 / 1_000.0,
-        }
-    }
-
     fn refresh_command_availability(&mut self) {
         if let Some(state) = self.command_state.as_ref() {
             let available = state.load(Ordering::Relaxed);
@@ -534,44 +523,17 @@ impl RttApp {
         }
     }
 
-    fn dispatch_cli_command(&self, command: Command, reply: Sender<CommandOutcome>) {
-        if !self.connected {
-            let _ = reply.send(ipc::unavailable_outcome(
-                &command,
-                "RTT2 GUI 尚未连接调试器",
-            ));
-            return;
-        }
-        if !self.command_available {
-            let _ = reply.send(ipc::unavailable_outcome(
-                &command,
-                "目标固件没有可用的 down0/up1 命令通道",
-            ));
-            return;
-        }
-        let Some(command_tx) = self.command_tx.as_ref() else {
-            let _ = reply.send(ipc::unavailable_outcome(
-                &command,
-                "RTT2 GUI 命令后端尚未就绪",
-            ));
-            return;
-        };
-        let request = backend::CommandRequest { command, reply };
-        match command_tx.try_send(request) {
-            Ok(()) => {}
-            Err(error) => {
-                let (reply, outcome) = command_queue_error(error);
-                let _ = reply.send(outcome);
-            }
-        }
-    }
-
     fn poll_command_replies(&mut self) {
         let mut pending = Vec::with_capacity(self.command_replies.len());
         let replies = std::mem::take(&mut self.command_replies);
         for receiver in replies {
             match receiver.try_recv() {
-                Ok(outcome) => self.push_command_log(format_outcome(&outcome)),
+                Ok(outcome) => {
+                    let line = format_outcome(&outcome);
+                    if !self.command_log.iter().any(|entry| *entry == line) {
+                        self.push_command_log(line);
+                    }
+                }
                 Err(mpsc::TryRecvError::Empty) => pending.push(receiver),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.push_command_log("命令结果通道已关闭；结果未知".to_owned())
@@ -647,15 +609,15 @@ impl RttApp {
     }
 
     fn sample_time_seconds(&mut self, timestamp_ms: u32) -> f64 {
-        if let Some(previous) = self.last_board_timestamp {
-            if timestamp_ms < previous {
-                if previous.wrapping_sub(timestamp_ms) > (u32::MAX / 2) {
-                    self.timestamp_epoch = self.timestamp_epoch.saturating_add(1_u64 << 32);
-                } else {
-                    self.timestamp_epoch = 0;
-                    self.plot_origin_ms = None;
-                    self.clear_all_plot_data();
-                }
+        if let Some(previous) = self.last_board_timestamp
+            && timestamp_ms < previous
+        {
+            if previous.wrapping_sub(timestamp_ms) > (u32::MAX / 2) {
+                self.timestamp_epoch = self.timestamp_epoch.saturating_add(1_u64 << 32);
+            } else {
+                self.timestamp_epoch = 0;
+                self.plot_origin_ms = None;
+                self.clear_all_plot_data();
             }
         }
         self.last_board_timestamp = Some(timestamp_ms);
@@ -1355,6 +1317,17 @@ impl RttApp {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new("数据记录").strong().size(17.0));
                 ui.separator();
+                if let Some(report) = &self.shared_capture {
+                    ui.label(format!(
+                        "终端采集：{} · {:.1}/{:.1} 秒 · {} 帧",
+                        report.state,
+                        report.elapsed_seconds,
+                        report.requested_seconds,
+                        report.frames
+                    ));
+                    ui.label(RichText::new(&report.file).weak());
+                    ui.separator();
+                }
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .button(if self.log_tx.is_some() {
@@ -1612,9 +1585,6 @@ fn variable_color(index: usize) -> Color32 {
 
 impl eframe::App for RttApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Drain CLI status/send requests before consuming the telemetry event
-        // backlog so a busy 200 Hz stream cannot starve the local pipe.
-        self.poll_ipc_commands();
         self.consume_backend_events();
         self.poll_monitor_thread();
         self.refresh_command_availability();
@@ -1693,8 +1663,8 @@ impl Drop for RttApp {
 #[cfg(test)]
 mod tests {
     use super::{LivePlotData, LivePlotWindowState, VARIABLE_COUNT, backend, command_queue_error};
-    use crate::command::{Command, CommandOutcome, OutcomeStatus};
     use eframe::egui;
+    use rtt2::command::{Command, CommandOutcome, OutcomeStatus};
     use std::sync::mpsc;
     use std::sync::{Arc, RwLock};
 
@@ -1921,7 +1891,11 @@ fn command_queue_error(
             (request.reply, outcome)
         }
         TrySendError::Disconnected(request) => {
-            let outcome = ipc::unavailable_outcome(&request.command, "RTT2 GUI 命令后端已关闭");
+            let outcome = CommandOutcome::rejected(
+                &request.command,
+                OutcomeStatus::ConnectionFailed,
+                "RTT2 GUI 命令后端已关闭",
+            );
             (request.reply, outcome)
         }
     }
