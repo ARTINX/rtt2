@@ -400,6 +400,7 @@ mod platform {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(false)
                 .open(&lock_path)
                 .map_err(|e| format!("无法创建 RTT2 锁文件 {}: {e}", lock_path.display()))?;
             // The lock serializes stale-socket cleanup and bind across worker

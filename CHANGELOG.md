@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- 固件地址解析改为统一读取 ELF 符号 `_SEGGER_RTT`（`object` crate）：Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 使用同一套解析，不再解析 Keil `.map`。
+- `connect --project` 可指向目录（递归查找 `.elf`/`.axf`/`.out`）或单个固件文件。
+- 新增 `connect --address 0x...` 和 GUI 的可选 RTT 地址输入，直接指定控制块地址并跳过自动解析；适合 ELF 被 strip 的固件。
+
 - 新增 Linux 和 macOS 支持：GUI/CLI 共用后端改用 Unix domain socket，Windows 继续使用命名管道。
 - GUI 改为 Cargo 特性（默认启用）：`--no-default-features` 可只构建 CLI，不引入或编译 eframe、egui、rfd、winit 等 GUI 依赖。
 - Unix 上自动启动和回收公共后端；Ctrl+C 会先保存进行中的采集再退出。

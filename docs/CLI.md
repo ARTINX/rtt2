@@ -27,15 +27,24 @@ send 1 1.0 2.0
 status
 ```
 
+直接用 ELF 符号地址连接（适合 ELF 已删除或被 strip 的场合）：
+
+```text
+connect --address 0x20009fa4 --chip STM32H723VG
+```
+
 Linux/macOS 示例：
 
 ```text
 connect --project "/home/me/firmware/bsp/cubemx/MDK-ARM/kit-miao" --chip STM32H723VG
+connect --project "/home/me/firmware/build/firmware.elf" --chip STM32H723VG
 ```
 
-Kit-C 芯片为 `STM32F407IGHx`。路径中有空格时加双引号或单引号；Windows 反斜杠保持原样。`--project` 指向具体板卡的输出目录，目录中需有与已烧录固件匹配的 Keil `.map` 文件。存在多个不同 RTT 地址时拒绝连接。
+Kit-C 芯片为 `STM32F407IGHx`。路径中有空格时加双引号或单引号；Windows 反斜杠保持原样。`--project` 可指向板卡输出目录或单个固件文件；目录会被递归搜索 `.elf`、`.axf`、`.out`（最多 8 层，跳过 `.git`、`target`、`node_modules`、`.venv`），并读取与已烧录固件匹配的 `_SEGGER_RTT` 符号。Keil `.axf`、armgcc/armclang `.elf`、IAR `.out` 都是 ELF，读取方式相同；`.map` 不再作为地址来源。存在多个不同 RTT 地址时拒绝连接。
 
-成功连接后配置保存到按平台划分的目录，下次直接 `connect` 即可：Windows 为 `%LOCALAPPDATA%\RTT2\connection.json`，macOS 为 `~/Library/Application Support/RTT2/connection.json`，Linux 为 `$XDG_CONFIG_HOME/RTT2/connection.json`（默认 `~/.config/RTT2/`）。首次可只给 `--chip`，使用后端 RTT 内存扫描；提供 MAP 目录更明确。更换固件后重新编译并指定匹配的目录。连接过程不会烧录或复位开发板。
+`--address` 直接指定 RTT 控制块地址（十六进制用 `0x` 前缀，`nm`/`readelf` 输出的裸十六进制也可），优先于 `--project`；指定地址后会清掉保存的工程目录，之后裸 `connect` 继续使用该地址。省略两者并只给 `--chip` 时，由后端扫描 RAM 定位控制块。
+
+成功连接后配置保存到按平台划分的目录，下次直接 `connect` 即可：Windows 为 `%LOCALAPPDATA%\RTT2\connection.json`，macOS 为 `~/Library/Application Support/RTT2/connection.json`，Linux 为 `$XDG_CONFIG_HOME/RTT2/connection.json`（默认 `~/.config/RTT2/`）。保存的工程目录在每次 `connect` 时重新解析，因此重新编译后会使用新的控制块地址。更换固件后重新编译并指定匹配的目录。连接过程不会烧录或复位开发板。
 
 `send` 接受 0–255 的命令号和最多 12 个有限 float32。现有固件提供 PING（0，无参数）与 ECHO（1，回显参数），其他业务指令取决于固件实现。回执含执行状态、会话 ID、序号、板端时间、返回值和主机测得延迟。`applied` 表示板端已确认执行；`unknown` 表示执行结果未知，不能据此自动重发。回执超时保持 2 秒；本地 IPC 另有超时保护。
 

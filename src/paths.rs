@@ -20,55 +20,41 @@ fn home_dir() -> Option<PathBuf> {
 /// Per-user configuration directory for the platform.
 pub fn config_dir() -> PathBuf {
     #[cfg(windows)]
-    {
-        return env_path("LOCALAPPDATA")
-            .or_else(home_dir)
-            .unwrap_or_else(std::env::temp_dir);
-    }
+    let dir = env_path("LOCALAPPDATA")
+        .or_else(home_dir)
+        .unwrap_or_else(std::env::temp_dir);
     #[cfg(target_os = "macos")]
-    {
-        return home_dir()
-            .map(|home| home.join("Library").join("Application Support"))
-            .unwrap_or_else(std::env::temp_dir);
-    }
+    let dir = home_dir()
+        .map(|home| home.join("Library").join("Application Support"))
+        .unwrap_or_else(std::env::temp_dir);
     #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        return env_path("XDG_CONFIG_HOME")
-            .filter(|path| path.is_absolute())
-            .or_else(|| home_dir().map(|home| home.join(".config")))
-            .unwrap_or_else(std::env::temp_dir);
-    }
+    let dir = env_path("XDG_CONFIG_HOME")
+        .filter(|path| path.is_absolute())
+        .or_else(|| home_dir().map(|home| home.join(".config")))
+        .unwrap_or_else(std::env::temp_dir);
     #[cfg(not(any(windows, unix)))]
-    {
-        std::env::temp_dir()
-    }
+    let dir = std::env::temp_dir();
+    dir
 }
 
 /// Directory for machine-local application state such as project history.
 pub fn data_dir() -> PathBuf {
     #[cfg(windows)]
-    {
-        return env_path("LOCALAPPDATA")
-            .or_else(home_dir)
-            .unwrap_or_else(std::env::temp_dir);
-    }
+    let dir = env_path("LOCALAPPDATA")
+        .or_else(home_dir)
+        .unwrap_or_else(std::env::temp_dir);
     #[cfg(target_os = "macos")]
-    {
-        return home_dir()
-            .map(|home| home.join("Library").join("Application Support"))
-            .unwrap_or_else(std::env::temp_dir);
-    }
+    let dir = home_dir()
+        .map(|home| home.join("Library").join("Application Support"))
+        .unwrap_or_else(std::env::temp_dir);
     #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        return env_path("XDG_DATA_HOME")
-            .filter(|path| path.is_absolute())
-            .or_else(|| home_dir().map(|home| home.join(".local").join("share")))
-            .unwrap_or_else(std::env::temp_dir);
-    }
+    let dir = env_path("XDG_DATA_HOME")
+        .filter(|path| path.is_absolute())
+        .or_else(|| home_dir().map(|home| home.join(".local").join("share")))
+        .unwrap_or_else(std::env::temp_dir);
     #[cfg(not(any(windows, unix)))]
-    {
-        std::env::temp_dir()
-    }
+    let dir = std::env::temp_dir();
+    dir
 }
 
 pub fn app_config_dir() -> PathBuf {

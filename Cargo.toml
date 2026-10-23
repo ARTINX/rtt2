@@ -9,11 +9,16 @@ publish = false
 
 [dependencies]
 egui_plot = { version = "0.37.0", optional = true }
+object = { version = "0.39.1", default-features = false, features = ["read_core", "elf", "std"] }
 probe-rs = "0.32.0"
 rfd = { version = "0.15.4", optional = true }
 csv = "1.3.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Only tests build ELF fixtures from scratch; the binary only reads them.
+[dev-dependencies]
+object = { version = "0.39.1", default-features = false, features = ["write"] }
 
 [features]
 # GUI is opt-out: `cargo build --no-default-features` produces a CLI-only binary

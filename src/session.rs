@@ -446,7 +446,9 @@ impl Core {
         if !matches!(config.chip.as_str(), "STM32F407IGHx" | "STM32H723VG") {
             return Err("芯片必须为 STM32F407IGHx 或 STM32H723VG".into());
         }
-        if let Some(project) = config.project.as_ref() {
+        if let Some(project) = config.project.as_ref()
+            && config.address.is_none()
+        {
             config.address = Some(address::find_rtt_address(Path::new(project))?);
         }
         if self.status.connected || self.status.connecting {

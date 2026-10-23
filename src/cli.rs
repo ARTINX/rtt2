@@ -22,6 +22,7 @@ pub enum ShellCommand {
     Connect {
         project: Option<String>,
         chip: Option<String>,
+        address: Option<u64>,
     },
     Disconnect,
     Send(command::Command),
@@ -88,6 +89,7 @@ pub fn parse(line: &str) -> Result<ShellCommand, String> {
         "connect" => {
             let mut project = None;
             let mut chip = None;
+            let mut address = None;
             let mut args = tokens.iter().skip(1);
             while let Some(option) = args.next() {
                 let value = args.next().ok_or_else(|| format!("{option} 后缺少参数"))?;
@@ -97,10 +99,17 @@ pub fn parse(line: &str) -> Result<ShellCommand, String> {
                 match option.as_str() {
                     "--project" if project.is_none() => project = Some(value.clone()),
                     "--chip" if chip.is_none() => chip = Some(value.clone()),
+                    "--address" if address.is_none() => {
+                        address = Some(crate::address::parse_address(value)?)
+                    }
                     _ => return Err(format!("未知或重复的 connect 选项：{option}")),
                 }
             }
-            Ok(ShellCommand::Connect { project, chip })
+            Ok(ShellCommand::Connect {
+                project,
+                chip,
+                address,
+            })
         }
         "send" => Ok(ShellCommand::Send(command::parse_shell_command(
             &tokens.join(" "),
@@ -140,7 +149,7 @@ fn help_text() -> String {
         "gui                      此构建未包含 GUI"
     };
     [
-        "connect [--project <MAP目录>] [--chip STM32F407IGHx|STM32H723VG]",
+        "connect [--project <目录|固件>] [--chip STM32F407IGHx|STM32H723VG] [--address 0x地址]",
         "send <cmd_id> [float参数…]",
         "catch <秒数> <文件名.csv>  后台采集，不覆盖已有文件",
         "wait                     等待当前采集写完",
@@ -150,7 +159,9 @@ fn help_text() -> String {
         gui,
         "help",
         "quit                     退出；进行中的本终端采集会提前结束",
-        "路径包含空格时请加引号。connect 不带参数可复用上次连接配置。",
+        "路径包含空格时请加引号。connect 不带参数可复用上次连接配置；",
+        "--project 支持目录（递归找 .elf/.axf/.out）或单个固件文件，",
+        "--address 直接指定 RTT 控制块地址并优先于工程解析。",
     ]
     .join("\n")
 }
@@ -247,9 +258,13 @@ pub fn run(args: Vec<String>) -> Result<i32, String> {
         }
         let result = (|| -> Result<bool, String> {
             match parse(&line)? {
-                ShellCommand::Connect { project, chip } => {
+                ShellCommand::Connect {
+                    project,
+                    chip,
+                    address,
+                } => {
                     let current = client.status()?;
-                    let config = connection_config(current, project, chip)?;
+                    let config = connection_config(current, project, chip, address)?;
                     let status = client.connect(config)?;
                     output.emit("connect", true, json!(status));
                 }
@@ -380,12 +395,9 @@ fn connection_config(
     status: Status,
     project: Option<String>,
     chip: Option<String>,
+    address: Option<u64>,
 ) -> Result<ConnectionConfig, String> {
     let mut config = status.config;
-    if let Some(project) = project {
-        config.project = Some(absolute_path(&project)?);
-        config.address = None;
-    }
     if let Some(chip) = chip {
         if !matches!(chip.as_str(), "STM32F407IGHx" | "STM32H723VG") {
             return Err("不支持的芯片型号".into());
@@ -395,9 +407,24 @@ fn connection_config(
         }
         config.chip = chip;
     }
+    if let Some(project) = project {
+        config.project = Some(absolute_path(&project)?);
+        config.address = None;
+    }
+    if let Some(address) = address {
+        // An explicit address replaces the project so that a later bare
+        // `connect` keeps using it instead of resolving a stale artifact.
+        config.address = Some(address);
+        config.project = None;
+    } else if config.project.is_some() {
+        // A saved project is resolved again on every connect so a rebuilt
+        // firmware is picked up without retyping the directory.
+        config.address = None;
+    }
     if config.chip.is_empty() {
         return Err(
-            "首次连接请指定 --chip 和 --project；不提供 --project 时会扫描 RTT 内存".into(),
+            "首次连接请指定 --chip，并提供 --project、--address，或只给 --chip 由后端扫描 RTT 内存"
+                .into(),
         );
     }
     Ok(config)
@@ -469,7 +496,24 @@ mod tests {
             parse(r#"connect --project "D:\board output\" --chip STM32H723VG"#).unwrap(),
             ShellCommand::Connect {
                 project: Some("D:\\board output\\".into()),
-                chip: Some("STM32H723VG".into())
+                chip: Some("STM32H723VG".into()),
+                address: None,
+            }
+        );
+        assert_eq!(
+            parse("connect --address 0x20009fa4").unwrap(),
+            ShellCommand::Connect {
+                project: None,
+                chip: None,
+                address: Some(0x2000_9fa4),
+            }
+        );
+        assert_eq!(
+            parse("connect --project fw --address 20009fa4").unwrap(),
+            ShellCommand::Connect {
+                project: Some("fw".into()),
+                chip: None,
+                address: Some(0x2000_9fa4),
             }
         );
         assert_eq!(
@@ -493,6 +537,10 @@ mod tests {
             "catch 1 a b",
             "connect --chip",
             "connect --chip X --chip Y",
+            "connect --address 0x20009fa5",
+            "connect --address 0",
+            "connect --address nope",
+            "connect --address 0x2000 --address 0x3000",
             "quit extra",
             "send 1 NaN",
         ] {
@@ -509,8 +557,46 @@ mod tests {
             parse("connect").unwrap(),
             ShellCommand::Connect {
                 project: None,
-                chip: None
+                chip: None,
+                address: None,
             }
         );
+    }
+
+    #[test]
+    fn explicit_address_replaces_the_saved_project() {
+        let firmware = std::env::temp_dir().join("rtt2-cli-firmware");
+        let firmware = firmware.display().to_string();
+        let resolved = Status {
+            config: ConnectionConfig {
+                chip: "STM32H723VG".into(),
+                project: Some(firmware.clone()),
+                address: Some(0x2000_1000),
+            },
+            ..Status::default()
+        };
+        // A saved project is resolved again on every bare connect.
+        let config = connection_config(resolved.clone(), None, None, None).unwrap();
+        assert_eq!(config.project.as_deref(), Some(firmware.as_str()));
+        assert_eq!(config.address, None);
+
+        let config = connection_config(resolved.clone(), None, None, Some(0x2000_2000)).unwrap();
+        assert_eq!(config.project, None);
+        assert_eq!(config.address, Some(0x2000_2000));
+
+        // A pinned address survives a bare reconnect and is cleared by a project.
+        let pinned = Status {
+            config: ConnectionConfig {
+                chip: "STM32H723VG".into(),
+                project: None,
+                address: Some(0x2000_2000),
+            },
+            ..Status::default()
+        };
+        let config = connection_config(pinned.clone(), None, None, None).unwrap();
+        assert_eq!(config.address, Some(0x2000_2000));
+        let config = connection_config(pinned, Some(firmware.clone()), None, None).unwrap();
+        assert_eq!(config.project.as_deref(), Some(firmware.as_str()));
+        assert_eq!(config.address, None);
     }
 }

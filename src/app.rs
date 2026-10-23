@@ -159,6 +159,7 @@ impl LivePlotWindowState {
 pub struct RttApp {
     chip: String,
     project_path: String,
+    address_input: String,
     project_history: Vec<String>,
     resolved_address: Option<u64>,
     refresh_interval_ms: u32,
@@ -268,6 +269,7 @@ impl RttApp {
         let mut app = Self {
             chip: config.chip.unwrap_or_else(|| "STM32F407IGHx".to_owned()),
             project_path,
+            address_input: String::new(),
             project_history,
             resolved_address: None,
             refresh_interval_ms: DEFAULT_REFRESH_MS,
@@ -323,7 +325,7 @@ impl RttApp {
     }
 
     fn browse_project(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("选择工程目录");
+        let mut dialog = rfd::FileDialog::new().set_title("选择板卡输出目录");
         if Path::new(&self.project_path).is_dir() {
             dialog = dialog.set_directory(&self.project_path);
         }
@@ -334,9 +336,22 @@ impl RttApp {
         }
     }
 
+    fn browse_firmware(&mut self) {
+        let mut dialog = rfd::FileDialog::new().set_title("选择固件文件");
+        dialog = dialog.add_filter("固件", &["elf", "axf", "out"]);
+        if Path::new(&self.project_path).is_dir() {
+            dialog = dialog.set_directory(&self.project_path);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.project_path = path.display().to_string();
+            self.resolved_address = None;
+            self.add_project_history();
+        }
+    }
+
     fn add_project_history(&mut self) {
         let path = self.project_path.trim();
-        if path.is_empty() || !Path::new(path).is_dir() {
+        if path.is_empty() || !Path::new(path).exists() {
             return;
         }
         let canonical = fs::canonicalize(path)
@@ -350,11 +365,34 @@ impl RttApp {
         save_project_history(&self.project_history);
     }
 
+    /// A manually entered address replaces firmware lookup entirely.
+    fn manual_address(&self) -> Result<Option<u64>, String> {
+        let text = self.address_input.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        address::parse_address(text).map(Some)
+    }
+
     fn find_address(&mut self) -> bool {
+        match self.manual_address() {
+            Ok(Some(address)) => {
+                self.resolved_address = Some(address);
+                self.notice = format!("使用手动指定的 RTT 地址：0x{address:08X}");
+                return true;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.resolved_address = None;
+                self.notice = error;
+                return false;
+            }
+        }
         let path = self.project_path.trim();
         if path.is_empty() {
             self.resolved_address = None;
-            self.notice = "先填写工程目录；留空可直接连接，但不会自动定位 RTT 控制块。".to_owned();
+            self.notice =
+                "先填写工程目录或 RTT 地址；两者都留空时由后端扫描 RTT 内存定位控制块。".to_owned();
             return false;
         }
         match address::find_rtt_address(Path::new(path)) {
@@ -379,11 +417,21 @@ impl RttApp {
             return;
         }
 
-        let project = self.project_path.trim();
-        let address = if project.is_empty() {
+        let manual = match self.manual_address() {
+            Ok(manual) => manual,
+            Err(error) => {
+                self.notice = error;
+                return;
+            }
+        };
+        let project = self.project_path.trim().to_owned();
+        let address = if let Some(address) = manual {
+            self.resolved_address = Some(address);
+            Some(address)
+        } else if project.is_empty() {
             None
         } else {
-            match address::find_rtt_address(Path::new(project)) {
+            match address::find_rtt_address(Path::new(&project)) {
                 Ok(address) => {
                     self.resolved_address = Some(address);
                     self.add_project_history();
@@ -404,10 +452,10 @@ impl RttApp {
         self.monitor_thread = Some(rtt2::session::spawn_frontend(
             rtt2::session::ConnectionConfig {
                 chip: self.chip.clone(),
-                project: if self.project_path.trim().is_empty() {
+                project: if manual.is_some() || project.is_empty() {
                     None
                 } else {
-                    Some(self.project_path.clone())
+                    Some(project.clone())
                 },
                 address,
             },
@@ -1067,8 +1115,8 @@ impl RttApp {
                 ui.horizontal(|ui| {
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.project_path)
-                            .desired_width((ui.available_width() - 78.0).max(180.0))
-                            .hint_text("选择包含 Listings/*.map 的工程目录"),
+                            .desired_width((ui.available_width() - 150.0).max(140.0))
+                            .hint_text("板卡输出目录或固件文件（.elf/.axf/.out）"),
                     );
                     if response.changed() {
                         self.resolved_address = None;
@@ -1076,8 +1124,22 @@ impl RttApp {
                     if response.lost_focus() {
                         self.add_project_history();
                     }
-                    if ui.button("浏览…").clicked() {
+                    if ui.button("目录…").clicked() {
                         self.browse_project();
+                    }
+                    if ui.button("固件…").clicked() {
+                        self.browse_firmware();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("RTT 地址");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.address_input)
+                            .desired_width(ui.available_width())
+                            .hint_text("可选，例如 0x20009FA4；填写后不再解析工程目录"),
+                    );
+                    if response.changed() {
+                        self.resolved_address = None;
                     }
                 });
                 egui::ComboBox::from_label("路径历史")

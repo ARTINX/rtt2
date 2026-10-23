@@ -129,7 +129,7 @@ fn monitor(
                 thread::sleep(Duration::from_millis(50));
             }
             Err(error) => {
-                return Err(format!("RTT 控制块未就绪或 MAP 地址与固件不匹配: {error}"));
+                return Err(format!("RTT 控制块未就绪或地址与固件不匹配: {error}"));
             }
         }
     }
