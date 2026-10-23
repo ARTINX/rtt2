@@ -133,7 +133,27 @@ pub fn parse(line: &str) -> Result<ShellCommand, String> {
     }
 }
 
-const HELP: &str = "connect [--project <MAP目录>] [--chip STM32F407IGHx|STM32H723VG]\nsend <cmd_id> [float参数…]\ncatch <秒数> <文件名.csv>  后台采集，不覆盖已有文件\nwait                     等待当前采集写完\ncancel                   取消当前终端的采集，保留部分文件\nstatus                   查看连接、最新一帧和采集状态\ndisconnect               断开共用的开发板连接\ngui                      打开共用连接的图形界面\nhelp\nquit                     退出；进行中的本终端采集会提前结束\n路径包含空格时请加引号。connect 不带参数可复用上次连接配置。";
+fn help_text() -> String {
+    let gui = if cfg!(feature = "gui") {
+        "gui                      打开共用连接的图形界面"
+    } else {
+        "gui                      此构建未包含 GUI"
+    };
+    [
+        "connect [--project <MAP目录>] [--chip STM32F407IGHx|STM32H723VG]",
+        "send <cmd_id> [float参数…]",
+        "catch <秒数> <文件名.csv>  后台采集，不覆盖已有文件",
+        "wait                     等待当前采集写完",
+        "cancel                   取消当前终端的采集，保留部分文件",
+        "status                   查看连接、最新一帧和采集状态",
+        "disconnect               断开共用的开发板连接",
+        gui,
+        "help",
+        "quit                     退出；进行中的本终端采集会提前结束",
+        "路径包含空格时请加引号。connect 不带参数可复用上次连接配置。",
+    ]
+    .join("\n")
+}
 
 struct Output {
     json: bool,
@@ -144,7 +164,7 @@ impl Output {
         if self.json {
             println!("{}", json!({"event": event, "ok": ok, "data": data}));
         } else if event == "help" {
-            println!("{HELP}");
+            println!("{}", help_text());
         } else if event == "error" {
             println!("错误：{}", data["error"].as_str().unwrap_or("未知错误"));
         } else {
@@ -281,23 +301,10 @@ pub fn run(args: Vec<String>) -> Result<i32, String> {
                     output.emit("cancel", true, client.call(Operation::CancelCapture)?);
                 }
                 ShellCommand::Gui => {
-                    let mut child = std::process::Command::new(
-                        std::env::current_exe().map_err(|e| e.to_string())?,
-                    );
-                    child
-                        .arg("gui")
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null());
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        child.creation_flags(0x0800_0000);
-                    }
-                    let process = child.spawn().map_err(|e| e.to_string())?;
-                    output.emit("gui", true, json!({"pid": process.id()}));
+                    let pid = spawn_gui()?;
+                    output.emit("gui", true, json!({"pid": pid}));
                 }
-                ShellCommand::Help => output.emit("help", true, json!({"commands": HELP})),
+                ShellCommand::Help => output.emit("help", true, json!({"commands": help_text()})),
                 ShellCommand::Quit => return Ok(true),
             }
             Ok(false)
@@ -327,6 +334,34 @@ pub fn run(args: Vec<String>) -> Result<i32, String> {
     drop(client);
     output.emit("quit", true, json!({"exit_code": exit_code}));
     Ok(exit_code)
+}
+
+#[cfg(feature = "gui")]
+fn spawn_gui() -> Result<u32, String> {
+    let mut child = std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    child
+        .arg("gui")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x0800_0000);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // A GUI started from the CLI must survive Ctrl+C in the terminal that
+        // launched it.
+        child.process_group(0);
+    }
+    Ok(child.spawn().map_err(|e| e.to_string())?.id())
+}
+
+#[cfg(not(feature = "gui"))]
+fn spawn_gui() -> Result<u32, String> {
+    Err("此 RTT2 构建未包含 GUI；请使用 cli 或重新构建并启用 gui 特性".into())
 }
 
 fn absolute_path(path: &str) -> Result<String, String> {
@@ -389,12 +424,45 @@ fn install_interrupt_handler() {
         SetConsoleCtrlHandler(Some(handler), 1);
     }
 }
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn install_interrupt_handler() {
+    // Keep the CLI alive long enough to flush a partial capture. The main loop
+    // polls INTERRUPTED and save-on-exit handles the rest.
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+    const SIGHUP: i32 = 1;
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+    extern "C" fn handler(_signal: i32) {
+        INTERRUPTED.store(true, Ordering::Release);
+    }
+    unsafe {
+        signal(SIGINT, handler);
+        signal(SIGTERM, handler);
+        signal(SIGHUP, handler);
+    }
+}
+#[cfg(all(not(windows), not(unix)))]
 fn install_interrupt_handler() {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "gui"))]
+    #[test]
+    fn gui_spawn_is_unavailable_without_feature() {
+        assert!(spawn_gui().is_err());
+    }
+    #[test]
+    fn help_reflects_gui_availability() {
+        let help = help_text();
+        if cfg!(feature = "gui") {
+            assert!(help.contains("打开共用连接的图形界面"));
+        } else {
+            assert!(help.contains("未包含 GUI"));
+        }
+    }
     #[test]
     fn paths_with_spaces_and_windows_backslashes_are_preserved() {
         assert_eq!(

@@ -1,5 +1,14 @@
 # 变更记录
 
+## 未发布
+
+- 新增 Linux 和 macOS 支持：GUI/CLI 共用后端改用 Unix domain socket，Windows 继续使用命名管道。
+- GUI 改为 Cargo 特性（默认启用）：`--no-default-features` 可只构建 CLI，不引入或编译 eframe、egui、rfd、winit 等 GUI 依赖。
+- Unix 上自动启动和回收公共后端；Ctrl+C 会先保存进行中的采集再退出。
+- 配置、项目历史和默认日志改用各平台的标准用户目录；无终端或桌面启动时打开 GUI，管道输入仍进入 CLI。
+- CJK 字体改为跨平台查找（Windows 字体、macOS PingFang、Linux fontconfig/常见 Noto/WQY 路径）。
+- 进程级 CLI 测试和本地 IPC 测试在 Unix 上运行；补充 Linux 探针权限与各平台构建说明。
+
 ## v1.3.0 — 2026-10-23
 
 - 双击打开 GUI，在终端中运行进入常驻 CLI；支持显式 `gui`、`cli` 和 `cli --json`。

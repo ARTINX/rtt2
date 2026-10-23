@@ -219,29 +219,29 @@ impl RttApp {
             config.auto_connect = true;
         }
         // egui's bundled Latin fonts do not cover the Chinese UI labels.
-        // Read an installed Windows font at runtime, keeping distribution to
-        // one exe without bundling a third-party font or font license.
-        let font_dir = std::env::var_os("WINDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-            .join("Fonts");
-        for name in ["msyh.ttc", "simhei.ttf", "Deng.ttf", "NotoSansSC-VF.ttf"] {
-            if let Ok(bytes) = fs::read(font_dir.join(name)) {
-                let mut fonts = FontDefinitions::default();
-                fonts.font_data.insert(
-                    "windows-cjk".to_owned(),
-                    Arc::new(FontData::from_owned(bytes)),
-                );
-                for family in [FontFamily::Proportional, FontFamily::Monospace] {
-                    fonts
-                        .families
-                        .entry(family)
-                        .or_default()
-                        .push("windows-cjk".to_owned());
-                }
-                cc.egui_ctx.set_fonts(fonts);
-                break;
-            }
+        // Load an installed CJK font at runtime, keeping distribution to one
+        // binary without bundling a third-party font or font license.
+        if let Some(bytes) = load_cjk_font() {
+            let mut fonts = FontDefinitions::default();
+            fonts.font_data.insert(
+                "system-cjk".to_owned(),
+                Arc::new(FontData::from_owned(bytes)),
+            );
+            // Use the CJK font as the primary proportional face: its Latin
+            // glyphs share the same metrics as its CJK glyphs, so mixed
+            // Chinese/English labels keep one baseline and size. Monospace
+            // stays Hack-first so numbers and bit fields keep their columns.
+            fonts
+                .families
+                .entry(FontFamily::Proportional)
+                .or_default()
+                .insert(0, "system-cjk".to_owned());
+            fonts
+                .families
+                .entry(FontFamily::Monospace)
+                .or_default()
+                .push("system-cjk".to_owned());
+            cc.egui_ctx.set_fonts(fonts);
         }
         let project_history = load_project_history();
         let project_path = config
@@ -779,7 +779,7 @@ impl RttApp {
             .set_title("保存 RTT 连续记录")
             .add_filter("CSV 文件", &["csv"])
             .set_file_name(&default_name);
-        let logs_dir = PathBuf::from("logs");
+        let logs_dir = rtt2::paths::app_data_dir().join("logs");
         let _ = fs::create_dir_all(&logs_dir);
         if logs_dir.is_dir() {
             dialog = dialog.set_directory(&logs_dir);
@@ -1908,13 +1908,83 @@ fn unix_millis() -> u128 {
         .as_millis()
 }
 
+fn load_cjk_font() -> Option<Vec<u8>> {
+    cjk_font_candidates()
+        .into_iter()
+        .find_map(|path| fs::read(path).ok())
+}
+
+fn cjk_font_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if cfg!(target_os = "linux")
+        && let Some(path) = fontconfig_match()
+    {
+        candidates.push(path);
+    }
+    if let Some(windir) = std::env::var_os("WINDIR") {
+        let fonts = PathBuf::from(windir).join("Fonts");
+        candidates.extend(
+            ["msyh.ttc", "simhei.ttf", "Deng.ttf", "NotoSansSC-VF.ttf"]
+                .into_iter()
+                .map(|name| fonts.join(name)),
+        );
+    }
+    #[cfg(windows)]
+    {
+        let fonts = PathBuf::from(r"C:\Windows").join("Fonts");
+        candidates.extend(
+            ["msyh.ttc", "simhei.ttf", "Deng.ttf", "NotoSansSC-VF.ttf"]
+                .into_iter()
+                .map(|name| fonts.join(name)),
+        );
+    }
+    candidates.extend(
+        [
+            // macOS
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/Supplemental/PingFang.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/Supplemental/Songti.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+            // Common Linux locations
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    candidates
+}
+
+fn fontconfig_match() -> Option<PathBuf> {
+    let output = std::process::Command::new("fc-match")
+        .args(["--format=%{file}", "sans-serif:lang=zh-cn"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?;
+    let path = PathBuf::from(path.trim());
+    path.is_file().then_some(path)
+}
+
 fn project_history_path() -> PathBuf {
-    PathBuf::from("logs").join("Dont_Delete_project_history.json")
+    rtt2::paths::app_data_dir().join("project_history.json")
 }
 
 fn load_project_history() -> Vec<String> {
     let path = project_history_path();
-    let Ok(file) = File::open(path) else {
+    // Keep history from older builds that stored it next to the working
+    // directory. The current location works for Finder/desktop launches too.
+    let legacy = PathBuf::from("logs").join("Dont_Delete_project_history.json");
+    let Ok(file) = File::open(&path).or_else(|_| File::open(legacy)) else {
         return Vec::new();
     };
     let Ok(paths) = serde_json::from_reader::<_, Vec<String>>(file) else {

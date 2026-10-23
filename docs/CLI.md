@@ -1,19 +1,22 @@
 # RTT2 v1.3.0 CLI 使用说明
 
-CLI 是常驻终端。启动一次，通过标准输入连续发送命令，直到 `quit`。它可以独立连接开发板，无需打开 GUI。下文 `rtt2.exe` 也可替换为下载文件名 `rtt2v1.3.0.exe`。
+CLI 是常驻终端。启动一次，通过标准输入连续发送命令，直到 `quit`。它可以独立连接开发板，无需打开 GUI。以下用 `rtt2` 表示可执行文件；Windows 下载的版本也可命名为 `rtt2v1.3.0.exe`。
 
 ## 启动
 
 | 操作 | 结果 |
 | --- | --- |
-| 双击 EXE | GUI |
+| Windows 双击 EXE | GUI |
 | CMD／PowerShell 中运行 `rtt2.exe` | 常驻 CLI，显示 `rtt2>` |
-| `rtt2.exe cli` | 明确进入 CLI |
-| `rtt2.exe cli --json` | 常驻 CLI，输出 JSONL，无提示符 |
-| `rtt2.exe gui` | 明确打开 GUI |
-| `rtt2.exe --version` / `--help` | 版本 / 启动帮助 |
+| 终端中运行 `./rtt2`（Linux/macOS） | 常驻 CLI，显示 `rtt2>` |
+| `rtt2 cli` | 明确进入 CLI |
+| `rtt2 cli --json` | 常驻 CLI，输出 JSONL，无提示符 |
+| `rtt2 gui` | 明确打开 GUI |
+| `rtt2 --version` / `--help` | 版本 / 启动帮助 |
 
-PowerShell 当前目录下使用 `./rtt2.exe`。输入重定向（包括 AI 或脚本的管道输入）自动输出 JSONL；非标准启动器可显式指定 `cli` 或 `gui`。
+Windows 在 PowerShell 当前目录下使用 `./rtt2.exe`；Linux 和 macOS 使用 `./rtt2`。把可执行文件放到 PATH 后可直接写 `rtt2`。输入重定向（包括 AI 或脚本的管道输入）自动输出 JSONL；非标准启动器可显式指定 `cli` 或 `gui`。macOS/Linux 从桌面直接启动且没有终端时，会打开 GUI。
+
+使用 `cargo build --release --locked --no-default-features` 构建的 CLI-only 版本始终进入命令行，`rtt2 gui` 和 CLI 内的 `gui` 命令会提示未包含 GUI。
 
 ## 连接与发送
 
@@ -24,9 +27,15 @@ send 1 1.0 2.0
 status
 ```
 
+Linux/macOS 示例：
+
+```text
+connect --project "/home/me/firmware/bsp/cubemx/MDK-ARM/kit-miao" --chip STM32H723VG
+```
+
 Kit-C 芯片为 `STM32F407IGHx`。路径中有空格时加双引号或单引号；Windows 反斜杠保持原样。`--project` 指向具体板卡的输出目录，目录中需有与已烧录固件匹配的 Keil `.map` 文件。存在多个不同 RTT 地址时拒绝连接。
 
-成功连接后配置保存到 `%LOCALAPPDATA%\RTT2\connection.json`，下次直接 `connect` 即可。首次可只给 `--chip`，使用后端 RTT 内存扫描；提供 MAP 目录更明确。更换固件后重新编译并指定匹配的目录。连接过程不会烧录或复位开发板。
+成功连接后配置保存到按平台划分的目录，下次直接 `connect` 即可：Windows 为 `%LOCALAPPDATA%\RTT2\connection.json`，macOS 为 `~/Library/Application Support/RTT2/connection.json`，Linux 为 `$XDG_CONFIG_HOME/RTT2/connection.json`（默认 `~/.config/RTT2/`）。首次可只给 `--chip`，使用后端 RTT 内存扫描；提供 MAP 目录更明确。更换固件后重新编译并指定匹配的目录。连接过程不会烧录或复位开发板。
 
 `send` 接受 0–255 的命令号和最多 12 个有限 float32。现有固件提供 PING（0，无参数）与 ECHO（1，回显参数），其他业务指令取决于固件实现。回执含执行状态、会话 ID、序号、板端时间、返回值和主机测得延迟。`applied` 表示板端已确认执行；`unknown` 表示执行结果未知，不能据此自动重发。回执超时保持 2 秒；本地 IPC 另有超时保护。
 
@@ -54,11 +63,12 @@ CSV 列为 `seq,timestamp_ms,status,status_hex,value1,...,value13`。采集结�
 
 GUI、CLI 是公共后端的两个前端。后端独占探针并分发遥测、命令回执；CLI 的采集由后端执行，不依赖窗口刷新。
 
-- 已连接时，在 CLI 输入 `gui` 或双击同版本 EXE，GUI 自动接入现有连接。
+- 已连接时，在 CLI 输入 `gui` 或启动同版本程序，GUI 自动接入现有连接。
 - GUI 已连接时进入 CLI，可直接 `status`、`send`、`catch`。
 - 关闭 GUI 或 `quit` 只退出该前端；其他前端继续使用连接。本终端发起的未完成定时采集会在退出时结束。
 - `disconnect`／GUI 的“停止监控”是明确的全局断开操作，会影响所有前端并结束采集。
 - 最后一个前端退出后，后端约 3 秒后释放连接并退出。异常结束的前端最多约 30 秒后被回收。
+- Windows 后端通过命名管道通信；Linux/macOS 通过 `/tmp/rtt2-<uid>/rtt2-session-v130-<uid>.sock` 通信，目录和套接字仅当前用户可访问。残留套接字会在下次启动时自动清理。
 - 请先关闭旧版 RTT2；v1.2 的 GUI 不参与 v1.3 的连接共享。
 
 GUI 保留曲线、回放、连续 CSV 和单发记录功能。关闭 GUI 时其自身连续记录会结束；CLI 定时采集由发起 CLI 的生命周期控制。
@@ -72,7 +82,7 @@ import json
 import subprocess
 
 p = subprocess.Popen(
-    [r"D:\tools\rtt2v1.3.0.exe", "cli", "--json"],
+    ["rtt2", "cli", "--json"],  # Windows 可写 r"D:\tools\rtt2.exe"
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     text=True, encoding="utf-8", bufsize=1,
 )
@@ -96,7 +106,7 @@ def command(line, expected_event):
 
 try:
     print(json.loads(p.stdout.readline()))  # ready
-    command(r'connect --project "D:\firmware\kit-miao" --chip STM32H723VG', "connect")
+    command(r'connect --project "/home/me/firmware/kit-miao" --chip STM32H723VG', "connect")
     command("catch 10 trial.csv", "catch")
     command("send 0", "send")
     command("wait", "wait")  # 期间还会收到 capture_finished

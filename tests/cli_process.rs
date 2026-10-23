@@ -1,5 +1,5 @@
-//! Real Windows process/pipe checks; these never connect to a hardware probe.
-#![cfg(windows)]
+//! Real process/IPC checks; these never connect to a hardware probe.
+#![cfg(any(windows, unix))]
 use serde_json::Value;
 use std::{
     io::{BufRead, BufReader, Write},

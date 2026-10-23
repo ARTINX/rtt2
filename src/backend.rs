@@ -92,7 +92,12 @@ fn monitor(
 ) -> Result<(), String> {
     let probes = Lister::new().list_all();
     let Some(probe_info) = probes.first() else {
-        return Err("未发现 CMSIS-DAP/J-Link 调试器".to_string());
+        return Err(if cfg!(unix) {
+            "未发现 CMSIS-DAP/J-Link 调试器；请确认探针已连接，Linux 用户还需检查 udev 规则和 USB 访问权限"
+                .to_string()
+        } else {
+            "未发现 CMSIS-DAP/J-Link 调试器".to_string()
+        });
     };
     let probe = probe_info
         .open()

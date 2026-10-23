@@ -92,18 +92,34 @@ pub struct Client {
 impl Client {
     pub fn open() -> Result<Self, String> {
         if probe().is_err() {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+            command
+                .arg("--session-worker")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
-                    .arg("--session-worker")
-                    .creation_flags(0x0800_0000)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .map_err(|e| e.to_string())?;
+                command.creation_flags(0x0800_0000);
             }
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                // Keep the worker out of the terminal's foreground process
+                // group so Ctrl+C reaches only the frontend that spawned it.
+                command.process_group(0);
+            }
+            let mut child = command.spawn().map_err(|e| e.to_string())?;
+            // Reap the worker if it exits while this frontend is still alive.
+            // On Windows there is no zombie process, so the handle is dropped.
+            #[cfg(unix)]
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+            #[cfg(not(unix))]
+            drop(child);
             let deadline = Instant::now() + Duration::from_secs(8);
             while let Err(error) = probe() {
                 if Instant::now() >= deadline {
@@ -187,11 +203,7 @@ pub fn probe() -> Result<Status, String> {
 }
 
 fn config_path() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("RTT2")
-        .join("connection.json")
+    crate::paths::app_config_dir().join("connection.json")
 }
 
 struct Capture {
@@ -671,7 +683,7 @@ impl Core {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 pub fn run_worker() -> Result<(), String> {
     let mut listener = local_pipe::Listener::bind()?;
     let (tx, rx) = mpsc::sync_channel::<Call>(64);
@@ -718,9 +730,9 @@ pub fn run_worker() -> Result<(), String> {
     let _ = actor.join();
     Ok(())
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, unix)))]
 pub fn run_worker() -> Result<(), String> {
-    Err("RTT2 仅支持 Windows".into())
+    Err("RTT2 会话不支持当前平台".into())
 }
 
 /// GUI adapter: only forwards events/commands; it never opens a probe itself.
